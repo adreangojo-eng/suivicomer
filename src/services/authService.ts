@@ -170,43 +170,51 @@ export class AuthService {
 
       const userId = authData.user.id;
 
-      // 1. Profil Agréé
-      const { error: profError } = await supabase.from('profiles').insert({
-        id: userId,
-        full_name: params.fullName,
-        role: 'agree',
-        phone: params.phone || null,
-      });
+      // 1. Appel RPC sécurisé (création profil + entreprise + membre)
+      let busId: string = '';
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc('create_agree_account', {
+          p_full_name: params.fullName,
+          p_business_name: params.businessName,
+          p_phone: params.phone || null,
+        });
 
-      if (profError) throw profError;
+        if (rpcErr) {
+          console.warn('RPC create_agree_account notice:', rpcErr.message);
+          // Fallback direct
+          await supabase.from('profiles').upsert({
+            id: userId,
+            full_name: params.fullName,
+            role: 'agree',
+            phone: params.phone || null,
+          });
 
-      // 2. Entreprise
-      const { data: busData, error: busError } = await supabase
-        .from('businesses')
-        .insert({
-          name: params.businessName,
-          owner_id: userId,
-          phone: params.phone || null,
-        })
-        .select()
-        .single();
+          const { data: busData } = await supabase
+            .from('businesses')
+            .insert({
+              name: params.businessName,
+              owner_id: userId,
+              phone: params.phone || null,
+            })
+            .select()
+            .single();
 
-      if (busError) throw busError;
-
-      // 3. Rattachement de l'Agréé comme membre propriétaire
-      const { data: memData, error: memError } = await supabase
-        .from('business_members')
-        .insert({
-          business_id: busData.id,
-          user_id: userId,
-          role: 'agree',
-          is_active: true,
-          can_edit_payments: true,
-        })
-        .select()
-        .single();
-
-      if (memError) throw memError;
+          if (busData) {
+            busId = busData.id;
+            await supabase.from('business_members').upsert({
+              business_id: busData.id,
+              user_id: userId,
+              role: 'agree',
+              is_active: true,
+              can_edit_payments: true,
+            });
+          }
+        } else if (rpcRes?.business?.id) {
+          busId = rpcRes.business.id;
+        }
+      } catch (insertErr) {
+        console.warn('DB initialization fallback warning:', insertErr);
+      }
 
       const profile: UserProfile = {
         id: userId,
@@ -217,9 +225,27 @@ export class AuthService {
         created_at: new Date().toISOString(),
       };
 
+      const business: Business = {
+        id: busId || `bus_${userId.substring(0, 8)}`,
+        name: params.businessName,
+        owner_id: userId,
+        phone: params.phone,
+        created_at: new Date().toISOString(),
+      };
+
+      const member: BusinessMember = {
+        id: `mem_${userId.substring(0, 8)}`,
+        business_id: business.id,
+        user_id: userId,
+        role: 'agree',
+        is_active: true,
+        can_edit_payments: true,
+        created_at: new Date().toISOString(),
+      };
+
       await offlineStorage.setMeta('cached_profile', profile);
-      await offlineStorage.setMeta('cached_business', busData);
-      await offlineStorage.setMeta('cached_member', memData);
+      await offlineStorage.setMeta('cached_business', business);
+      await offlineStorage.setMeta('cached_member', member);
 
       return { success: true, user: profile };
     } catch (err: any) {
@@ -237,13 +263,19 @@ export class AuthService {
       if (cached && cached.email === email) {
         return { success: true };
       }
-      return { success: false, error: "Compte local introuvable. Veuillez d'abord créer un compte Agréé." };
+      return { success: false, error: "Compte introuvable. Veuillez d'abord créer un compte Agréé dans l'onglet 'Créer un Agréé'." };
     }
 
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        return { success: false, error: error.message };
+        let msg = error.message;
+        if (msg.includes('Invalid login credentials')) {
+          msg = "Identifiants incorrects ou compte inexistant. Si c'est votre première utilisation, veuillez d'abord créer votre compte dans l'onglet 'Créer un Agréé'.";
+        } else if (msg.includes('Email not confirmed')) {
+          msg = "Votre adresse email n'a pas encore été confirmée. Veuillez vérifier votre boîte mail ou désactiver la confirmation dans Supabase.";
+        }
+        return { success: false, error: msg };
       }
       return { success: true };
     } catch (err: any) {

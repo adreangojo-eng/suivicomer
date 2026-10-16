@@ -3,7 +3,7 @@ import { authService } from '../services/authService';
 import { dataService } from '../services/dataService';
 import { UserRole, UserProfile, Business, BusinessMember, Carriere } from '../types';
 import { offlineStorage } from '../services/offlineDb';
-import { Truck, ShieldCheck, User, Building, Lock, Mail, Phone, Key, ArrowRight } from 'lucide-react';
+import { Truck, ShieldCheck, User, Building, Lock, Mail, Phone, Key, ArrowRight, Eye, EyeOff } from 'lucide-react';
 
 interface AuthModalProps {
   onAuthenticated: (user: UserProfile, business: Business, member: BusinessMember, carriere?: Carriere) => void;
@@ -15,10 +15,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
   // Formulaire de connexion Agréé / Secrétaire
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   // Formulaire de connexion Commercial
   const [commIdentifier, setCommIdentifier] = useState('');
   const [commPassword, setCommPassword] = useState('');
+  const [showCommPassword, setShowCommPassword] = useState(false);
 
   // Formulaire d'inscription Agréé
   const [fullName, setFullName] = useState('');
@@ -26,6 +28,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -142,115 +145,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
     }
   };
 
-  const handleQuickDemo = async (role: UserRole) => {
-    setLoading(true);
-    setErrorMsg(null);
-
-    const busId = 'bus_demo_carriere';
-    const demoBusiness: Business = {
-      id: busId,
-      name: 'Carrière de Granulats Ivoire',
-      owner_id: 'usr_agree_demo',
-      address: 'Route d\'Alépé, Carrière Nord',
-      phone: '+225 07 10 20 30 40',
-      created_at: new Date().toISOString(),
-    };
-
-    // Assurer qu'au moins une carrière de démonstration existe
-    const demoCarriere: Carriere = {
-      id: 'carr_demo_nord',
-      business_id: busId,
-      name: 'Carrière Principale Nord - PK 24',
-      location: 'Route d\'Alépé, Kilomètre 24',
-      phone: '+225 07 10 20 30 40',
-      is_active: true,
-      created_at: new Date().toISOString(),
-    };
-    await offlineStorage.saveCarrieres([demoCarriere]);
-
-    let userProfile: UserProfile;
-    let member: BusinessMember;
-
-    if (role === 'agree') {
-      userProfile = {
-        id: 'usr_agree_demo',
-        email: 'directeur@carriere-ivoire.ci',
-        full_name: 'Amadou Diallo (Agréé)',
-        role: 'agree',
-        phone: '+225 07 10 20 30 40',
-        created_at: new Date().toISOString(),
-      };
-      member = {
-        id: 'mem_agree_demo',
-        business_id: busId,
-        user_id: userProfile.id,
-        role: 'agree',
-        is_active: true,
-        can_edit_payments: true,
-        created_at: new Date().toISOString(),
-      };
-    } else if (role === 'secretaire') {
-      userProfile = {
-        id: 'usr_sec_demo',
-        email: 'secretaire@carriere-ivoire.ci',
-        full_name: 'Fatou Traoré (Secrétaire)',
-        role: 'secretaire',
-        phone: '+225 05 55 66 77 88',
-        created_at: new Date().toISOString(),
-      };
-      member = {
-        id: 'mem_sec_demo',
-        business_id: busId,
-        carriere_id: demoCarriere.id,
-        user_id: userProfile.id,
-        role: 'secretaire',
-        is_active: true,
-        can_edit_payments: true,
-        created_at: new Date().toISOString(),
-      };
-    } else {
-      userProfile = {
-        id: 'usr_comm_demo',
-        email: 'koffi.serge@carriere-ivoire.ci',
-        full_name: 'Koffi Serge (Commercial)',
-        role: 'commercial',
-        phone: '+225 01 22 33 44 55',
-        created_at: new Date().toISOString(),
-      };
-      member = {
-        id: 'mem_comm_demo',
-        business_id: busId,
-        carriere_id: demoCarriere.id,
-        user_id: userProfile.id,
-        role: 'commercial',
-        is_active: true,
-        can_edit_payments: false,
-        created_at: new Date().toISOString(),
-      };
-
-      // Créer également l'enregistrement commercial pour la démo
-      await offlineStorage.saveCommercials([{
-        id: 'comm_koffi_demo',
-        business_id: busId,
-        carriere_id: demoCarriere.id,
-        user_id: userProfile.id,
-        full_name: 'Koffi Serge',
-        phone: '+225 01 22 33 44 55',
-        access_code: 'COMM-1001',
-        password: '1234',
-        is_active: true,
-        created_at: new Date().toISOString()
-      }]);
-    }
-
-    await offlineStorage.setMeta('cached_profile', userProfile);
-    await offlineStorage.setMeta('cached_business', demoBusiness);
-    await offlineStorage.setMeta('cached_member', member);
-
-    onAuthenticated(userProfile, demoBusiness, member, role !== 'agree' ? demoCarriere : undefined);
-    setLoading(false);
-  };
-
   return (
     <div className="modal-overlay">
       <div className="modal-card" style={{ maxWidth: '520px' }}>
@@ -344,8 +238,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
         </div>
 
         {errorMsg && (
-          <div className="banner-alert" style={{ marginBottom: '1rem' }}>
+          <div
+            className="banner-alert"
+            style={{
+              marginBottom: '1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem',
+              borderLeft: '4px solid #ef4444',
+            }}
+          >
             <span>{errorMsg}</span>
+            {tab === 'login' && errorMsg.includes('compte') && (
+              <button
+                type="button"
+                onClick={() => { setTab('register'); setErrorMsg(null); }}
+                className="btn btn-secondary"
+                style={{
+                  fontSize: '0.8rem',
+                  padding: '0.4rem 0.75rem',
+                  alignSelf: 'flex-start',
+                  fontWeight: 600,
+                  marginTop: '0.2rem',
+                }}
+              >
+                Créer mon compte Agréé maintenant &rarr;
+              </button>
+            )}
           </div>
         )}
 
@@ -366,14 +285,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
 
             <div className="form-group">
               <label className="form-label">Mot de passe</label>
-              <input
-                type="password"
-                className="form-input"
-                placeholder="••••••••"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                required
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showLoginPassword ? 'text' : 'password'}
+                  className="form-input"
+                  style={{ paddingRight: '2.5rem' }}
+                  placeholder="••••••••"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(!showLoginPassword)}
+                  style={{
+                    position: 'absolute',
+                    right: '0.75rem',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--slate-400)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0.25rem',
+                  }}
+                  title={showLoginPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+                  tabIndex={-1}
+                >
+                  {showLoginPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
 
             <button
@@ -384,6 +327,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
             >
               {loading ? 'Connexion en cours...' : 'Se connecter'}
             </button>
+
+            <div
+              style={{
+                textAlign: 'center',
+                marginTop: '1.25rem',
+                fontSize: '0.84rem',
+                color: 'var(--slate-600)',
+                borderTop: '1px solid var(--slate-100)',
+                paddingTop: '1rem',
+              }}
+            >
+              Pas encore de compte Agréé ?{' '}
+              <button
+                type="button"
+                onClick={() => { setTab('register'); setErrorMsg(null); }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--primary-600)',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                  padding: 0,
+                }}
+              >
+                Créer un compte Agréé
+              </button>
+            </div>
           </form>
         )}
 
@@ -406,14 +377,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
 
             <div className="form-group">
               <label className="form-label">Code PIN / Mot de passe (par défaut 1234) *</label>
-              <input
-                type="password"
-                className="form-input"
-                placeholder="••••"
-                value={commPassword}
-                onChange={(e) => setCommPassword(e.target.value)}
-                required
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showCommPassword ? 'text' : 'password'}
+                  className="form-input"
+                  style={{ paddingRight: '2.5rem' }}
+                  placeholder="••••"
+                  value={commPassword}
+                  onChange={(e) => setCommPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCommPassword(!showCommPassword)}
+                  style={{
+                    position: 'absolute',
+                    right: '0.75rem',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--slate-400)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0.25rem',
+                  }}
+                  title={showCommPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+                  tabIndex={-1}
+                >
+                  {showCommPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
 
             <div style={{ fontSize: '0.75rem', color: 'var(--slate-500)', marginBottom: '1rem' }}>
@@ -484,14 +479,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
 
               <div className="form-group">
                 <label className="form-label">Mot de passe *</label>
-                <input
-                  type="password"
-                  className="form-input"
-                  placeholder="Min. 8 caractères"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showRegisterPassword ? 'text' : 'password'}
+                    className="form-input"
+                    style={{ paddingRight: '2.5rem' }}
+                    placeholder="Min. 8 caractères"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowRegisterPassword(!showRegisterPassword)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.75rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--slate-400)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0.25rem',
+                    }}
+                    title={showRegisterPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+                    tabIndex={-1}
+                  >
+                    {showRegisterPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -507,60 +526,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
             >
               {loading ? 'Création en cours...' : 'Créer mon compte Agréé'}
             </button>
+
+            <div
+              style={{
+                textAlign: 'center',
+                marginTop: '1.25rem',
+                fontSize: '0.84rem',
+                color: 'var(--slate-600)',
+                borderTop: '1px solid var(--slate-100)',
+                paddingTop: '1rem',
+              }}
+            >
+              Vous avez déjà un compte ?{' '}
+              <button
+                type="button"
+                onClick={() => { setTab('login'); setErrorMsg(null); }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--primary-600)',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                  padding: 0,
+                }}
+              >
+                Se connecter
+              </button>
+            </div>
           </form>
         )}
-
-        {/* DÉMONSTRATION EN 1 CLIC */}
-        <div
-          style={{
-            marginTop: '1.25rem',
-            paddingTop: '1rem',
-            borderTop: '1px solid var(--slate-200)',
-          }}
-        >
-          <div
-            style={{
-              fontSize: '0.72rem',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              color: 'var(--slate-500)',
-              textAlign: 'center',
-              marginBottom: '0.65rem',
-              letterSpacing: '0.04em',
-            }}
-          >
-            Accès Rapide Test & Démonstration
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('agree')}
-              className="btn btn-secondary"
-              style={{ fontSize: '0.78rem', padding: '0.5rem 0.25rem', flexDirection: 'column', gap: '0.2rem' }}
-            >
-              <ShieldCheck size={18} color="#0369a1" />
-              <span>Agréé</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('secretaire')}
-              className="btn btn-secondary"
-              style={{ fontSize: '0.78rem', padding: '0.5rem 0.25rem', flexDirection: 'column', gap: '0.2rem' }}
-            >
-              <User size={18} color="#7c3aed" />
-              <span>Secrétaire</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickDemo('commercial')}
-              className="btn btn-secondary"
-              style={{ fontSize: '0.78rem', padding: '0.5rem 0.25rem', flexDirection: 'column', gap: '0.2rem' }}
-            >
-              <Building size={18} color="#b45309" />
-              <span>Commercial</span>
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
