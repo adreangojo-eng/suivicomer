@@ -26,10 +26,22 @@ CREATE TABLE IF NOT EXISTS public.businesses (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
+-- 3b. TABLE CARRIERES (MULTI-CARRIERES PAR AGREÉ)
+CREATE TABLE IF NOT EXISTS public.carrieres (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    location TEXT,
+    phone TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
 -- 4. TABLE BUSINESS_MEMBERS
 CREATE TABLE IF NOT EXISTS public.business_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    carriere_id UUID REFERENCES public.carrieres(id) ON DELETE SET NULL,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('agree', 'secretaire', 'commercial')),
     is_active BOOLEAN NOT NULL DEFAULT true,
@@ -42,9 +54,12 @@ CREATE TABLE IF NOT EXISTS public.business_members (
 CREATE TABLE IF NOT EXISTS public.commercials (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    carriere_id UUID REFERENCES public.carrieres(id) ON DELETE CASCADE,
     user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     full_name TEXT NOT NULL,
     phone TEXT,
+    access_code TEXT,
+    pin TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
@@ -53,6 +68,7 @@ CREATE TABLE IF NOT EXISTS public.commercials (
 CREATE TABLE IF NOT EXISTS public.bon_ranges (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    carriere_id UUID REFERENCES public.carrieres(id) ON DELETE CASCADE,
     commercial_id UUID NOT NULL REFERENCES public.commercials(id) ON DELETE CASCADE,
     start_num BIGINT NOT NULL,
     end_num BIGINT NOT NULL,
@@ -66,6 +82,7 @@ CREATE TABLE IF NOT EXISTS public.bon_ranges (
 CREATE TABLE IF NOT EXISTS public.loading_vouchers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    carriere_id UUID REFERENCES public.carrieres(id) ON DELETE CASCADE,
     range_id UUID NOT NULL REFERENCES public.bon_ranges(id) ON DELETE CASCADE,
     commercial_id UUID NOT NULL REFERENCES public.commercials(id) ON DELETE CASCADE,
     voucher_number BIGINT NOT NULL,
@@ -79,6 +96,7 @@ CREATE TABLE IF NOT EXISTS public.loading_vouchers (
 CREATE TABLE IF NOT EXISTS public.loadings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     business_id UUID NOT NULL REFERENCES public.businesses(id) ON DELETE CASCADE,
+    carriere_id UUID REFERENCES public.carrieres(id) ON DELETE CASCADE,
     commercial_id UUID NOT NULL REFERENCES public.commercials(id) ON DELETE RESTRICT,
     voucher_id UUID NOT NULL REFERENCES public.loading_vouchers(id) ON DELETE RESTRICT,
     voucher_number BIGINT NOT NULL,
@@ -117,7 +135,8 @@ CREATE OR REPLACE FUNCTION public.attribute_bon_range(
     p_commercial_id UUID,
     p_start_num BIGINT,
     p_end_num BIGINT,
-    p_user_id UUID
+    p_user_id UUID,
+    p_carriere_id UUID DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -149,6 +168,7 @@ BEGIN
     -- Création atomique de la plage
     INSERT INTO public.bon_ranges (
         business_id,
+        carriere_id,
         commercial_id,
         start_num,
         end_num,
@@ -157,6 +177,7 @@ BEGIN
     )
     VALUES (
         p_business_id,
+        p_carriere_id,
         p_commercial_id,
         p_start_num,
         p_end_num,
@@ -168,6 +189,7 @@ BEGIN
     -- Création de chaque bon individuel de la plage
     INSERT INTO public.loading_vouchers (
         business_id,
+        carriere_id,
         range_id,
         commercial_id,
         voucher_number,
@@ -175,6 +197,7 @@ BEGIN
     )
     SELECT
         p_business_id,
+        p_carriere_id,
         v_new_range_id,
         p_commercial_id,
         s.num,
@@ -203,7 +226,8 @@ CREATE OR REPLACE FUNCTION public.record_loading(
     p_price_per_ton NUMERIC,
     p_amount_paid NUMERIC,
     p_payment_ref TEXT,
-    p_user_id UUID
+    p_user_id UUID,
+    p_carriere_id UUID DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -267,6 +291,7 @@ BEGIN
     -- Insertion du chargement
     INSERT INTO public.loadings (
         business_id,
+        carriere_id,
         commercial_id,
         voucher_id,
         voucher_number,
@@ -284,6 +309,7 @@ BEGIN
     )
     VALUES (
         p_business_id,
+        COALESCE(p_carriere_id, v_voucher.carriere_id),
         p_commercial_id,
         p_voucher_id,
         v_voucher.voucher_number,
@@ -387,6 +413,7 @@ $$;
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.businesses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.carrieres ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.business_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.commercials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bon_ranges ENABLE ROW LEVEL SECURITY;
@@ -442,6 +469,20 @@ CREATE POLICY "Agrees can create their business"
 CREATE POLICY "Agrees can update their business"
     ON public.businesses FOR UPDATE
     USING (owner_id = auth.uid());
+
+-- CARRIERES POLICIES
+CREATE POLICY "Members can view carrieres in their business"
+    ON public.carrieres FOR SELECT
+    USING (business_id = public.current_user_business_id());
+
+CREATE POLICY "Agrees can manage carrieres"
+    ON public.carrieres FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.businesses
+            WHERE id = carrieres.business_id AND owner_id = auth.uid()
+        )
+    );
 
 -- BUSINESS_MEMBERS POLICIES
 CREATE POLICY "Members can view members in their business"
