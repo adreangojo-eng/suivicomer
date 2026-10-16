@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Commercial, Business, Carriere } from '../types';
 import { dataService } from '../services/dataService';
-import { Users, X, Plus, Key, Phone, Power, AlertCircle, Copy, Check } from 'lucide-react';
+import { Users, X, Plus, Key, Phone, Power, AlertCircle, Copy, Check, Star } from 'lucide-react';
 
 interface CommercialsModalProps {
   business: Business;
@@ -21,6 +21,7 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
   const [phone, setPhone] = useState('');
   const [accessCode, setAccessCode] = useState('');
   const [password, setPassword] = useState('1234');
+  const [isSecretary, setIsSecretary] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
@@ -54,6 +55,8 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
         phone,
         accessCode,
         password,
+        isSecretary,
+        canEditPayments: isSecretary,
       });
 
       if (res.success) {
@@ -61,6 +64,7 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
         setPhone('');
         setAccessCode(`COMM-${Math.floor(1000 + Math.random() * 9000)}`);
         setPassword('1234');
+        setIsSecretary(false);
         loadData();
         onUpdated();
       } else {
@@ -75,6 +79,12 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
 
   const handleToggleActive = async (id: string, current: boolean) => {
     await dataService.toggleCommercialActive(id, !current);
+    loadData();
+    onUpdated();
+  };
+
+  const handleToggleSecretary = async (id: string, newSec: boolean) => {
+    await dataService.toggleCommercialSecretary(id, newSec);
     loadData();
     onUpdated();
   };
@@ -187,6 +197,31 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
             </div>
           </div>
 
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.55rem',
+              marginBottom: '0.75rem',
+              background: isSecretary ? '#fef3c7' : 'white',
+              border: isSecretary ? '1px solid #fde68a' : '1px solid var(--slate-200)',
+              padding: '0.55rem 0.8rem',
+              borderRadius: '8px',
+              transition: 'all 0.15s',
+            }}
+          >
+            <input
+              type="checkbox"
+              id="isSecCheckbox"
+              checked={isSecretary}
+              onChange={(e) => setIsSecretary(e.target.checked)}
+              style={{ width: '16px', height: '16px', accentColor: 'var(--primary-600)', cursor: 'pointer' }}
+            />
+            <label htmlFor="isSecCheckbox" style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--slate-800)', cursor: 'pointer' }}>
+              ⭐ Désigner également comme <strong>Secrétaire</strong> (autorisation de modifier les paiements & bons)
+            </label>
+          </div>
+
           <div style={{ fontSize: '0.74rem', color: 'var(--slate-500)', marginBottom: '0.75rem' }}>
             ℹ️ Le commercial utilisera ce <strong>Code d'accès</strong> (ou son Téléphone) et son <strong>Code PIN</strong> pour se connecter directement depuis la page d'accueil.
           </div>
@@ -229,15 +264,44 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
                   }}
                 >
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: '0.92rem', color: c.is_active ? 'var(--slate-900)' : 'var(--slate-500)' }}>
-                      {c.full_name}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.92rem', color: c.is_active ? 'var(--slate-900)' : 'var(--slate-500)' }}>
+                        {c.full_name}
+                      </span>
+                      {c.is_secretary ? (
+                        <span style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem', background: '#fef3c7', color: '#92400e', borderRadius: '4px', fontWeight: 700 }}>
+                          ⭐ Secrétaire
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem', background: 'var(--slate-100)', color: 'var(--slate-600)', borderRadius: '4px', fontWeight: 600 }}>
+                          Commercial
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: '0.76rem', color: 'var(--slate-500)', marginTop: '0.15rem' }}>
-                      Identifiant : <strong style={{ color: 'var(--primary-700)' }}>{c.access_code || c.phone}</strong> • PIN : <strong>{c.password || '1234'}</strong>
+                      Identifiant : <strong style={{ color: 'var(--primary-700)' }}>{c.access_code || c.phone}</strong> • PIN : <strong>{c.password || c.pin || '1234'}</strong>
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSecretary(c.id, !c.is_secretary)}
+                      className="btn btn-secondary"
+                      style={{
+                        padding: '0.35rem 0.65rem',
+                        minHeight: '34px',
+                        fontSize: '0.74rem',
+                        background: c.is_secretary ? '#fef3c7' : undefined,
+                        borderColor: c.is_secretary ? '#fde68a' : undefined,
+                        color: c.is_secretary ? '#92400e' : undefined,
+                      }}
+                      title="Attribuer ou retirer l'autorisation de Secrétaire"
+                    >
+                      <Star size={14} color={c.is_secretary ? '#d97706' : 'currentColor'} />
+                      <span>{c.is_secretary ? 'Secrétaire' : 'Désigner Secrétaire'}</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => copyCredentials(c)}

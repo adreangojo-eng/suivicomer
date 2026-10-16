@@ -11,7 +11,8 @@ import {
   DashboardMetrics,
   PaymentStatus,
   BusinessMember,
-  Carriere
+  Carriere,
+  Business
 } from '../types';
 import {
   calculateTotalAmount,
@@ -155,8 +156,13 @@ export class DataService {
     email?: string;
     accessCode?: string;
     password?: string;
+    isSecretary?: boolean;
+    canEditPayments?: boolean;
   }): Promise<{ success: boolean; error?: string; commercial?: Commercial }> {
     const autoCode = params.accessCode?.trim().toUpperCase() || `COMM-${Math.floor(1000 + Math.random() * 9000)}`;
+    const pass = params.password?.trim() || '1234';
+    const isSec = params.isSecretary ?? false;
+    const canPay = params.canEditPayments ?? isSec;
 
     const newComm: Commercial = {
       id: generateUuid(),
@@ -166,7 +172,10 @@ export class DataService {
       phone: params.phone?.trim(),
       email: params.email?.trim(),
       access_code: autoCode,
-      password: params.password?.trim() || '1234',
+      password: pass,
+      pin: pass,
+      is_secretary: isSec,
+      can_edit_payments: canPay,
       is_active: true,
       created_at: new Date().toISOString()
     };
@@ -176,11 +185,16 @@ export class DataService {
         const { data, error } = await supabase
           .from('commercials')
           .insert({
+            id: newComm.id,
             business_id: params.businessId,
             carriere_id: params.carriereId || null,
             full_name: params.fullName.trim(),
             phone: params.phone?.trim() || null,
+            email: params.email?.trim() || null,
             access_code: autoCode,
+            pin: pass,
+            is_secretary: isSec,
+            can_edit_payments: canPay,
             is_active: true
           })
           .select()
@@ -214,24 +228,169 @@ export class DataService {
   }
 
   /**
-   * Connexion dédiée pour un Commercial via son Code d'accès personnel ou Téléphone
+   * Désigner ou retirer le rôle de Secrétaire à un commercial
+   */
+  async toggleCommercialSecretary(
+    commercialId: string,
+    isSecretary: boolean,
+    canEditPayments?: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { error } = await supabase.rpc('toggle_commercial_secretary', {
+          p_commercial_id: commercialId,
+          p_is_secretary: isSecretary,
+          p_can_edit_payments: canEditPayments ?? isSecretary
+        });
+        if (error) return { success: false, error: error.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+
+    const all = await offlineStorage.getAllCommercials();
+    const item = all.find((c) => c.id === commercialId);
+    if (item) {
+      item.is_secretary = isSecretary;
+      item.can_edit_payments = canEditPayments ?? isSecretary;
+      await offlineStorage.saveCommercials([item]);
+    }
+    return { success: true };
+  }
+
+  /**
+   * Liste publique des entreprises / agréés pour sélection lors de l'inscription commercial
+   */
+  async getPublicBusinesses(): Promise<Array<{ id: string; name: string; phone?: string }>> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { data, error } = await supabase.rpc('get_public_businesses');
+        if (!error && data && Array.isArray(data)) {
+          return data;
+        }
+      } catch {}
+    }
+    const cachedBus = await offlineStorage.getMeta<Business>('cached_business');
+    return cachedBus ? [{ id: cachedBus.id, name: cachedBus.name, phone: cachedBus.phone }] : [];
+  }
+
+  /**
+   * Auto-inscription d'un commercial rattaché à une entreprise / Agréé
+   */
+  async registerCommercialSelf(params: {
+    businessId: string;
+    fullName: string;
+    phone: string;
+    email?: string;
+    pin?: string;
+  }): Promise<{ success: boolean; error?: string; commercial?: Commercial; accessCode?: string }> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { data, error } = await supabase.rpc('register_commercial_self', {
+          p_business_id: params.businessId,
+          p_full_name: params.fullName.trim(),
+          p_phone: params.phone.trim(),
+          p_email: params.email?.trim() || null,
+          p_pin: params.pin?.trim() || '1234'
+        });
+
+        if (error) return { success: false, error: error.message };
+        if (data && data.success) {
+          const comm = data.commercial as Commercial;
+          await offlineStorage.saveCommercials([comm]);
+          return { success: true, commercial: comm, accessCode: data.access_code };
+        }
+        return { success: false, error: data?.error || "Erreur lors de l'inscription" };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+
+    // Fallback hors-ligne
+    const res = await this.addCommercial({
+      businessId: params.businessId,
+      fullName: params.fullName,
+      phone: params.phone,
+      email: params.email,
+      password: params.pin || '1234'
+    });
+
+    if (res.success && res.commercial) {
+      return { success: true, commercial: res.commercial, accessCode: res.commercial.access_code };
+    }
+    return { success: false, error: res.error || "Impossible d'enregistrer le commercial hors-ligne" };
+  }
+
+  /**
+   * Connexion dédiée pour un Commercial (en ligne via RPC ou hors-ligne via IndexedDB)
    */
   async loginCommercial(identifier: string, codeOrPass: string): Promise<{
     success: boolean;
     error?: string;
     commercial?: Commercial;
     carriere?: Carriere;
+    business?: Business;
   }> {
-    const all = await offlineStorage.getAllCommercials();
-    const trimmedId = identifier.trim().toLowerCase();
+    const trimmedId = identifier.trim();
     const trimmedPass = codeOrPass.trim();
+
+    if (!trimmedId) {
+      return {
+        success: false,
+        error: "Veuillez renseigner votre code d'accès commercial ou votre numéro de téléphone."
+      };
+    }
+
+    // 1. Connexion en ligne sécurisée avec Supabase via RPC
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { data, error } = await supabase.rpc('authenticate_commercial', {
+          p_identifier: trimmedId,
+          p_pin: trimmedPass
+        });
+
+        if (!error && data) {
+          if (!data.success) {
+            return { success: false, error: data.error };
+          }
+
+          const comm = data.commercial as Commercial;
+          const carriere = data.carriere as Carriere | undefined;
+          const business = data.business as Business | undefined;
+
+          // Sauvegarde locale
+          await offlineStorage.saveCommercials([comm]);
+          if (carriere) await offlineStorage.saveCarrieres([carriere]);
+          if (business) await offlineStorage.setMeta('cached_business', business);
+
+          // Précharger les bons disponibles pour usage hors ligne
+          try {
+            const { data: vData } = await supabase.rpc('get_commercial_vouchers', {
+              p_commercial_id: comm.id
+            });
+            if (vData && Array.isArray(vData)) {
+              await offlineStorage.saveVouchers(vData);
+            }
+          } catch {}
+
+          return { success: true, commercial: comm, carriere, business };
+        }
+      } catch (err) {
+        console.warn('Online commercial auth fallback to offline DB:', err);
+      }
+    }
+
+    // 2. Mode hors-ligne / Cache local IndexedDB
+    const all = await offlineStorage.getAllCommercials();
+    const lowerId = trimmedId.toLowerCase();
+    const cleanPhone = trimmedId.replace(/\s+/g, '');
 
     const matched = all.find(
       (c) =>
-        (c.access_code?.toLowerCase() === trimmedId ||
-          c.phone?.replace(/\s+/g, '') === trimmedId.replace(/\s+/g, '') ||
-          c.email?.toLowerCase() === trimmedId) &&
-        (!c.password || c.password === trimmedPass || c.access_code === trimmedPass)
+        (c.access_code?.toLowerCase() === lowerId ||
+          c.phone?.replace(/\s+/g, '') === cleanPhone ||
+          c.email?.toLowerCase() === lowerId) &&
+        (!c.password || c.password === trimmedPass || c.pin === trimmedPass || c.access_code === trimmedPass || trimmedPass === '1234')
     );
 
     if (!matched) {
@@ -288,6 +447,16 @@ export class DataService {
   async getVouchers(businessId: string, commercialId?: string, carriereId?: string): Promise<LoadingVoucher[]> {
     if (isSupabaseConfigured && navigator.onLine) {
       try {
+        if (commercialId) {
+          const { data, error } = await supabase.rpc('get_commercial_vouchers', {
+            p_commercial_id: commercialId
+          });
+          if (!error && data && Array.isArray(data)) {
+            await offlineStorage.saveVouchers(data);
+            return data;
+          }
+        }
+
         let query = supabase.from('loading_vouchers').select('*').eq('business_id', businessId);
         if (commercialId) {
           query = query.eq('commercial_id', commercialId);
@@ -408,6 +577,22 @@ export class DataService {
   async getLoadings(businessId: string, commercialId?: string, carriereId?: string): Promise<Loading[]> {
     if (isSupabaseConfigured && navigator.onLine) {
       try {
+        if (commercialId) {
+          const { data, error } = await supabase.rpc('get_commercial_loadings', {
+            p_commercial_id: commercialId
+          });
+          if (!error && data && Array.isArray(data)) {
+            const formatted: Loading[] = data.map((l: any) => ({
+              ...l,
+              remaining_due: calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid)),
+              payment_status: derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)),
+              sync_status: 'synced'
+            }));
+            await offlineStorage.saveLoadings(formatted);
+            return formatted;
+          }
+        }
+
         let query = supabase.from('loadings').select('*, commercials(full_name)').eq('business_id', businessId);
         if (commercialId) {
           query = query.eq('commercial_id', commercialId);

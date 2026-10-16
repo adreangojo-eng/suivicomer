@@ -68,6 +68,9 @@ export interface Commercial {
   email?: string;
   access_code?: string; // Code d'accès direct pour connexion
   password?: string;
+  pin?: string;
+  is_secretary?: boolean;
+  can_edit_payments?: boolean;
   is_active: boolean;
   created_at: string;
 }
