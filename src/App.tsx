@@ -46,12 +46,18 @@ export const App: React.FC = () => {
 
   // Charger la session (en ligne ou cache offline)
   useEffect(() => {
-    authService.getCurrentSession().then((session) => {
-      setUser(session.user);
-      setBusiness(session.business);
-      setMember(session.member);
-      setLoadingSession(false);
-    });
+    authService
+      .getCurrentSession()
+      .then((session) => {
+        setUser(session.user);
+        setBusiness(session.business);
+        setMember(session.member);
+        setLoadingSession(false);
+      })
+      .catch((err) => {
+        console.warn('Session load notice:', err);
+        setLoadingSession(false);
+      });
 
     // Écouter le moteur de synchronisation
     const unsubscribe = syncEngine.subscribe((status) => {
