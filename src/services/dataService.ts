@@ -67,6 +67,29 @@ export class DataService {
 
     if (isSupabaseConfigured && navigator.onLine) {
       try {
+        // 1. Tenter la fonction RPC sécurisée create_carriere (évite toute récursion RLS)
+        const { data: rpcData, error: rpcError } = await supabase.rpc('create_carriere', {
+          p_business_id: params.businessId,
+          p_name: params.name.trim(),
+          p_location: params.location?.trim() || null,
+          p_phone: params.phone?.trim() || null,
+        });
+
+        if (!rpcError && rpcData) {
+          const carriere: Carriere = {
+            id: rpcData.id,
+            business_id: rpcData.business_id,
+            name: rpcData.name,
+            location: rpcData.location || undefined,
+            phone: rpcData.phone || undefined,
+            is_active: rpcData.is_active,
+            created_at: rpcData.created_at,
+          };
+          await offlineStorage.saveCarrieres([carriere]);
+          return { success: true, carriere };
+        }
+
+        // 2. Fallback insertion standard si le RPC renvoie une erreur
         const { data, error } = await supabase
           .from('carrieres')
           .insert({
