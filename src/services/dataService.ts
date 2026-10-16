@@ -1,6 +1,7 @@
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import { offlineStorage } from './offlineDb';
 import { syncEngine } from './syncEngine';
+import { isUuid, generateUuid } from '../utils/uuid';
 import {
   Commercial,
   BonRange,
@@ -55,8 +56,15 @@ export class DataService {
       return { success: false, error: 'Le nom de la carrière est obligatoire.' };
     }
 
+    if (isSupabaseConfigured && !isUuid(params.businessId)) {
+      return {
+        success: false,
+        error: 'Votre session est obsolète. Veuillez vous déconnecter puis vous reconnecter.',
+      };
+    }
+
     const newCarriere: Carriere = {
-      id: `carr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: generateUuid(),
       business_id: params.businessId,
       name: params.name.trim(),
       location: params.location?.trim(),
@@ -151,7 +159,7 @@ export class DataService {
     const autoCode = params.accessCode?.trim().toUpperCase() || `COMM-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const newComm: Commercial = {
-      id: `comm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: generateUuid(),
       business_id: params.businessId,
       carriere_id: params.carriereId,
       full_name: params.fullName.trim(),
@@ -360,7 +368,7 @@ export class DataService {
     }
 
     // Création locale atomique
-    const rangeId = `range_${Date.now()}`;
+    const rangeId = generateUuid();
     const newRange: BonRange = {
       id: rangeId,
       business_id: params.businessId,
@@ -376,7 +384,7 @@ export class DataService {
     const newVouchers: LoadingVoucher[] = [];
     for (let num = params.startNum; num <= params.endNum; num++) {
       newVouchers.push({
-        id: `voucher_${params.businessId}_${params.carriereId || 'default'}_${num}`,
+        id: generateUuid(),
         business_id: params.businessId,
         carriere_id: params.carriereId,
         range_id: rangeId,

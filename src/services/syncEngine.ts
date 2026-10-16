@@ -258,7 +258,8 @@ export class SyncEngine {
       p_price_per_ton: l.price_per_ton,
       p_amount_paid: l.amount_paid,
       p_payment_ref: l.payment_ref || null,
-      p_user_id: l.created_by || null
+      p_user_id: l.created_by || null,
+      p_carriere_id: l.carriere_id || null
     });
 
     if (error) {

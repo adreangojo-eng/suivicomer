@@ -1,6 +1,7 @@
+import type { User } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import { offlineStorage } from './offlineDb';
-import { UserProfile, Business, BusinessMember, UserRole } from '../types';
+import { UserProfile, Business, BusinessMember } from '../types';
 
 export interface AuthState {
   user: UserProfile | null;
@@ -8,75 +9,151 @@ export interface AuthState {
   member: BusinessMember | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  error?: string;
 }
+import { isUuid, generateUuid } from '../utils/uuid';
+export { isUuid, generateUuid };
+
+const EMPTY_STATE: AuthState = {
+  user: null,
+  business: null,
+  member: null,
+  isAuthenticated: false,
+  isLoading: false,
+};
 
 export class AuthService {
   /**
-   * Récupère l'état courant de la session (en ligne ou depuis le cache local offline)
+   * Récupère l'état courant de la session.
+   * - En ligne avec session Supabase : la base fait foi (et le compte Agréé est réparé si incomplet).
+   * - Hors ligne : cache local, uniquement s'il est cohérent (identifiants UUID réels).
    */
   async getCurrentSession(): Promise<AuthState> {
-    try {
-      if (isSupabaseConfigured && navigator.onLine) {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error || !session?.user) {
-          return this.getOfflineCachedSession();
-        }
-
-        // Récupérer le profil
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        if (profile) {
-          // Récupérer le membre et l'entreprise
-          const { data: member } = await supabase
-            .from('business_members')
-            .select('*')
-            .eq('user_id', session.user.id)
-            .eq('is_active', true)
-            .single();
-
-          let business: Business | null = null;
-          if (member?.business_id) {
-            const { data: bData } = await supabase
-              .from('businesses')
-              .select('*')
-              .eq('id', member.business_id)
-              .single();
-            business = bData;
-          }
-
-          const fullProfile: UserProfile = {
-            id: session.user.id,
-            email: session.user.email,
-            full_name: profile.full_name,
-            role: profile.role,
-            phone: profile.phone,
-            created_at: profile.created_at,
-          };
-
-          // Sauvegarder dans le cache local sécurisé pour le mode hors ligne
-          await offlineStorage.setMeta('cached_profile', fullProfile);
-          if (business) await offlineStorage.setMeta('cached_business', business);
-          if (member) await offlineStorage.setMeta('cached_member', member);
-
-          return {
-            user: fullProfile,
-            business,
-            member: member || null,
-            isAuthenticated: true,
-            isLoading: false,
-          };
-        }
-      }
-
-      // Si hors ligne ou Supabase non configuré, vérifier le cache offline
-      return this.getOfflineCachedSession();
-    } catch {
+    if (!isSupabaseConfigured) {
       return this.getOfflineCachedSession();
     }
+
+    let sessionUser: User | null = null;
+    try {
+      const { data } = await supabase.auth.getSession();
+      sessionUser = data.session?.user ?? null;
+    } catch {
+      sessionUser = null;
+    }
+
+    if (sessionUser && navigator.onLine) {
+      try {
+        const remote = await this.loadRemoteState(sessionUser);
+        if (remote) return remote;
+        return {
+          ...EMPTY_STATE,
+          error:
+            "Votre compte est incomplet (profil ou entreprise introuvable). Veuillez vous reconnecter ou contacter le support.",
+        };
+      } catch {
+        // Erreur réseau : on retombe sur le cache, uniquement s'il appartient au même utilisateur
+        const cached = await this.getOfflineCachedSession();
+        if (cached.user?.id === sessionUser.id) return cached;
+        return EMPTY_STATE;
+      }
+    }
+
+    const cached = await this.getOfflineCachedSession();
+
+    // Hors ligne : on fait confiance au cache validé
+    if (!navigator.onLine) return cached;
+
+    // En ligne sans session Supabase : seuls les commerciaux (connexion par code/PIN) restent valides.
+    if (cached.user && cached.user.role !== 'commercial') {
+      await this.clearSessionCache();
+      return EMPTY_STATE;
+    }
+    return cached;
+  }
+
+  /**
+   * Charge profil / membre / entreprise depuis Supabase.
+   * Si l'utilisateur est un Agréé dont le compte est incomplet, le répare de façon idempotente.
+   */
+  private async loadRemoteState(authUser: User): Promise<AuthState | null> {
+    const fetchState = async () => {
+      const { data: profile, error: profErr } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', authUser.id)
+        .maybeSingle();
+      if (profErr) throw profErr;
+
+      const { data: member, error: memErr } = await supabase
+        .from('business_members')
+        .select('*')
+        .eq('user_id', authUser.id)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (memErr) throw memErr;
+
+      return { profile, member };
+    };
+
+    let { profile, member } = await fetchState();
+
+    const metaRole = (authUser.user_metadata?.role as string | undefined) ?? 'agree';
+    if ((!profile || !member) && metaRole === 'agree') {
+      await this.ensureAgreeAccount(authUser);
+      ({ profile, member } = await fetchState());
+    }
+
+    if (!profile || !member) return null;
+
+    const { data: business, error: busErr } = await supabase
+      .from('businesses')
+      .select('*')
+      .eq('id', member.business_id)
+      .maybeSingle();
+    if (busErr) throw busErr;
+    if (!business) return null;
+
+    const fullProfile: UserProfile = {
+      id: authUser.id,
+      email: authUser.email,
+      full_name: profile.full_name,
+      role: profile.role,
+      phone: profile.phone ?? undefined,
+      created_at: profile.created_at,
+    };
+
+    await offlineStorage.setMeta('cached_profile', fullProfile);
+    await offlineStorage.setMeta('cached_business', business);
+    await offlineStorage.setMeta('cached_member', member);
+
+    return {
+      user: fullProfile,
+      business,
+      member,
+      isAuthenticated: true,
+      isLoading: false,
+    };
+  }
+
+  /**
+   * Crée (ou complète) profil + entreprise + rattachement pour un Agréé authentifié.
+   * La fonction SQL est idempotente : aucun doublon n'est créé si elle est rappelée.
+   */
+  private async ensureAgreeAccount(authUser: User): Promise<void> {
+    const meta = authUser.user_metadata || {};
+    const fullName: string =
+      (meta.full_name as string)?.trim() || authUser.email?.split('@')[0] || 'Agréé';
+    const businessName: string =
+      (meta.business_name as string)?.trim() || `Entreprise ${fullName}`;
+
+    const { error } = await supabase.rpc('create_agree_account', {
+      p_full_name: fullName,
+      p_business_name: businessName,
+      p_phone: (meta.phone as string) || null,
+    });
+    if (error) throw error;
   }
 
   private async getOfflineCachedSession(): Promise<AuthState> {
@@ -85,31 +162,34 @@ export class AuthService {
       const business = await offlineStorage.getMeta<Business>('cached_business');
       const member = await offlineStorage.getMeta<BusinessMember>('cached_member');
 
-      if (user) {
-        return {
-          user,
-          business,
-          member,
-          isAuthenticated: true,
-          isLoading: false,
-        };
+      if (!user || !business || !member) return EMPTY_STATE;
+
+      // Avec Supabase, tout identifiant d'entreprise doit être un vrai UUID.
+      // Un cache corrompu (ancien identifiant fabriqué) est purgé.
+      if (isSupabaseConfigured && !isUuid(business.id)) {
+        await this.clearSessionCache();
+        return EMPTY_STATE;
       }
+
+      return { user, business, member, isAuthenticated: true, isLoading: false };
+    } catch {
+      return EMPTY_STATE;
+    }
+  }
+
+  private async clearSessionCache(): Promise<void> {
+    try {
+      await offlineStorage.setMeta('cached_profile', null);
+      await offlineStorage.setMeta('cached_business', null);
+      await offlineStorage.setMeta('cached_member', null);
     } catch {
       // Ignorer
     }
-
-    return {
-      user: null,
-      business: null,
-      member: null,
-      isAuthenticated: false,
-      isLoading: false,
-    };
   }
 
   /**
-   * Inscription d'un nouvel Agréé (création du compte, du profil et de son entreprise)
-   * Règle de sécurité : Seul le rôle 'agree' peut être créé via inscription publique.
+   * Inscription d'un nouvel Agréé.
+   * Règle de sécurité : seul le rôle 'agree' peut être créé via inscription publique.
    */
   async registerAgree(params: {
     email: string;
@@ -117,139 +197,87 @@ export class AuthService {
     fullName: string;
     businessName: string;
     phone?: string;
-  }): Promise<{ success: boolean; error?: string; user?: UserProfile }> {
+  }): Promise<{ success: boolean; error?: string; needsEmailConfirmation?: boolean }> {
     if (!isSupabaseConfigured) {
-      // Mode simulation hors-connexion / test local sans projet Supabase externe connecté
-      const mockId = `mock_user_${Date.now()}`;
-      const mockProfile: UserProfile = {
+      // Mode local sans projet Supabase (développement uniquement)
+      const mockId = generateUuid();
+      const now = new Date().toISOString();
+      await offlineStorage.setMeta('cached_profile', {
         id: mockId,
         email: params.email,
         full_name: params.fullName,
         role: 'agree',
         phone: params.phone,
-        created_at: new Date().toISOString(),
-      };
-      const mockBusiness: Business = {
-        id: `mock_bus_${Date.now()}`,
+        created_at: now,
+      } satisfies UserProfile);
+      const busId = generateUuid();
+      await offlineStorage.setMeta('cached_business', {
+        id: busId,
         name: params.businessName,
         owner_id: mockId,
-        created_at: new Date().toISOString(),
-      };
-      const mockMember: BusinessMember = {
-        id: `mock_mem_${Date.now()}`,
-        business_id: mockBusiness.id,
+        created_at: now,
+      } satisfies Business);
+      await offlineStorage.setMeta('cached_member', {
+        id: generateUuid(),
+        business_id: busId,
         user_id: mockId,
         role: 'agree',
         is_active: true,
         can_edit_payments: true,
-        created_at: new Date().toISOString(),
-      };
+        created_at: now,
+      } satisfies BusinessMember);
+      return { success: true };
+    }
 
-      await offlineStorage.setMeta('cached_profile', mockProfile);
-      await offlineStorage.setMeta('cached_business', mockBusiness);
-      await offlineStorage.setMeta('cached_member', mockMember);
-
-      return { success: true, user: mockProfile };
+    if (params.password.length < 8) {
+      return { success: false, error: 'Le mot de passe doit contenir au moins 8 caractères.' };
     }
 
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: params.email,
+      const { data, error } = await supabase.auth.signUp({
+        email: params.email.trim(),
         password: params.password,
         options: {
           data: {
-            full_name: params.fullName,
+            full_name: params.fullName.trim(),
+            business_name: params.businessName.trim(),
+            phone: params.phone?.trim() || null,
             role: 'agree',
           },
         },
       });
 
-      if (authError || !authData.user) {
-        return { success: false, error: authError?.message || "Erreur lors de l'inscription" };
-      }
-
-      const userId = authData.user.id;
-
-      // 1. Appel RPC sécurisé (création profil + entreprise + membre)
-      let busId: string = '';
-      try {
-        const { data: rpcRes, error: rpcErr } = await supabase.rpc('create_agree_account', {
-          p_full_name: params.fullName,
-          p_business_name: params.businessName,
-          p_phone: params.phone || null,
-        });
-
-        if (rpcErr) {
-          console.warn('RPC create_agree_account notice:', rpcErr.message);
-          // Fallback direct
-          await supabase.from('profiles').upsert({
-            id: userId,
-            full_name: params.fullName,
-            role: 'agree',
-            phone: params.phone || null,
-          });
-
-          const { data: busData } = await supabase
-            .from('businesses')
-            .insert({
-              name: params.businessName,
-              owner_id: userId,
-              phone: params.phone || null,
-            })
-            .select()
-            .single();
-
-          if (busData) {
-            busId = busData.id;
-            await supabase.from('business_members').upsert({
-              business_id: busData.id,
-              user_id: userId,
-              role: 'agree',
-              is_active: true,
-              can_edit_payments: true,
-            });
-          }
-        } else if (rpcRes?.business?.id) {
-          busId = rpcRes.business.id;
+      if (error) {
+        if (/already registered|already exists/i.test(error.message)) {
+          return {
+            success: false,
+            error: 'Cette adresse email est déjà utilisée. Connectez-vous dans l\'onglet « Agréé / Secrétaire ».',
+          };
         }
-      } catch (insertErr) {
-        console.warn('DB initialization fallback warning:', insertErr);
+        return { success: false, error: error.message };
       }
 
-      const profile: UserProfile = {
-        id: userId,
-        email: params.email,
-        full_name: params.fullName,
-        role: 'agree',
-        phone: params.phone,
-        created_at: new Date().toISOString(),
-      };
+      // Supabase masque les emails déjà inscrits : identities vide = compte existant
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        return {
+          success: false,
+          error: 'Cette adresse email est déjà utilisée. Connectez-vous dans l\'onglet « Agréé / Secrétaire ».',
+        };
+      }
 
-      const business: Business = {
-        id: busId || `bus_${userId.substring(0, 8)}`,
-        name: params.businessName,
-        owner_id: userId,
-        phone: params.phone,
-        created_at: new Date().toISOString(),
-      };
+      if (!data.user) {
+        return { success: false, error: "Erreur lors de l'inscription." };
+      }
 
-      const member: BusinessMember = {
-        id: `mem_${userId.substring(0, 8)}`,
-        business_id: business.id,
-        user_id: userId,
-        role: 'agree',
-        is_active: true,
-        can_edit_payments: true,
-        created_at: new Date().toISOString(),
-      };
+      // Confirmation email requise : pas de session, l'entreprise sera créée à la 1ère connexion
+      if (!data.session) {
+        return { success: true, needsEmailConfirmation: true };
+      }
 
-      await offlineStorage.setMeta('cached_profile', profile);
-      await offlineStorage.setMeta('cached_business', business);
-      await offlineStorage.setMeta('cached_member', member);
-
-      return { success: true, user: profile };
+      await this.ensureAgreeAccount(data.user);
+      return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || "Impossible de finaliser l'inscription" };
+      return { success: false, error: err?.message || "Impossible de finaliser l'inscription" };
     }
   }
 
@@ -258,28 +286,30 @@ export class AuthService {
    */
   async login(email: string, password: string): Promise<{ success: boolean; error?: string }> {
     if (!isSupabaseConfigured) {
-      // Détection compte de test local
       const cached = await offlineStorage.getMeta<UserProfile>('cached_profile');
-      if (cached && cached.email === email) {
-        return { success: true };
-      }
-      return { success: false, error: "Compte introuvable. Veuillez d'abord créer un compte Agréé dans l'onglet 'Créer un Agréé'." };
+      if (cached && cached.email === email) return { success: true };
+      return {
+        success: false,
+        error: "Compte introuvable. Veuillez d'abord créer un compte Agréé dans l'onglet 'Créer un Agréé'.",
+      };
     }
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) {
         let msg = error.message;
         if (msg.includes('Invalid login credentials')) {
-          msg = "Identifiants incorrects ou compte inexistant. Si c'est votre première utilisation, veuillez d'abord créer votre compte dans l'onglet 'Créer un Agréé'.";
+          msg =
+            "Identifiants incorrects ou compte inexistant. Si c'est votre première utilisation, veuillez d'abord créer votre compte dans l'onglet 'Créer un Agréé'.";
         } else if (msg.includes('Email not confirmed')) {
-          msg = "Votre adresse email n'a pas encore été confirmée. Veuillez vérifier votre boîte mail ou désactiver la confirmation dans Supabase.";
+          msg =
+            "Votre adresse email n'est pas encore confirmée. Cliquez sur le lien reçu par email puis reconnectez-vous.";
         }
         return { success: false, error: msg };
       }
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Échec de connexion' };
+      return { success: false, error: err?.message || 'Échec de connexion' };
     }
   }
 

@@ -32,10 +32,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setInfoMsg(null);
     setLoading(true);
 
     try {
@@ -44,6 +46,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
         const session = await authService.getCurrentSession();
         if (session.user && session.business && session.member) {
           onAuthenticated(session.user, session.business, session.member);
+        } else {
+          setErrorMsg(session.error || "Impossible de charger votre espace. Veuillez réessayer.");
         }
       } else {
         setErrorMsg(res.error || 'Identifiants invalides');
@@ -128,12 +132,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
         phone,
       });
 
-      if (res.success) {
+      if (res.success && res.needsEmailConfirmation) {
+        setInfoMsg(
+          `Compte créé ! Un email de confirmation a été envoyé à ${email}. Cliquez sur le lien reçu, puis connectez-vous ici.`
+        );
+        setLoginEmail(email);
+        setTab('login');
+      } else if (res.success) {
         const session = await authService.getCurrentSession();
         if (session.user && session.business && session.member) {
           // L'Agréé est maintenant créé. Le système va l'amener sur la page obligatoire
           // "Créer une nouvelle carrière" !
           onAuthenticated(session.user, session.business, session.member);
+        } else {
+          setErrorMsg(session.error || "Compte créé, mais l'espace n'a pas pu être chargé. Connectez-vous.");
         }
       } else {
         setErrorMsg(res.error || 'Erreur lors de la création du compte');
@@ -236,6 +248,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
             Créer un Agréé
           </button>
         </div>
+
+        {infoMsg && (
+          <div
+            style={{
+              marginBottom: '1rem',
+              padding: '0.75rem 1rem',
+              borderRadius: '10px',
+              background: '#ecfdf5',
+              color: '#065f46',
+              borderLeft: '4px solid #10b981',
+              fontSize: '0.85rem',
+              fontWeight: 500,
+            }}
+          >
+            {infoMsg}
+          </div>
+        )}
 
         {errorMsg && (
           <div
