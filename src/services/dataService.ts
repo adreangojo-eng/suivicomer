@@ -530,6 +530,20 @@ export class DataService {
   async getBonRanges(businessId: string, carriereId?: string): Promise<BonRange[]> {
     if (isSupabaseConfigured && navigator.onLine) {
       try {
+        const { data, error } = await supabase.rpc('get_agree_bon_ranges', {
+          p_business_id: businessId,
+          p_carriere_id: carriereId || null
+        });
+
+        if (!error && data && Array.isArray(data)) {
+          const formatted: BonRange[] = data.map((r: any) => ({
+            ...r,
+            commercial_name: r.commercial_name
+          }));
+          await offlineStorage.saveRanges(formatted);
+          return formatted;
+        }
+
         let query = supabase
           .from('bon_ranges')
           .select('*, commercials(full_name)')
@@ -539,10 +553,10 @@ export class DataService {
           query = query.eq('carriere_id', carriereId);
         }
 
-        const { data, error } = await query.order('start_num', { ascending: false });
+        const { data: qData, error: qErr } = await query.order('start_num', { ascending: false });
 
-        if (!error && data) {
-          const formatted: BonRange[] = data.map((r: any) => ({
+        if (!qErr && qData) {
+          const formatted: BonRange[] = qData.map((r: any) => ({
             ...r,
             commercial_name: r.commercials?.full_name
           }));
@@ -560,6 +574,15 @@ export class DataService {
         if (commercialId) {
           const { data, error } = await supabase.rpc('get_commercial_vouchers', {
             p_commercial_id: commercialId
+          });
+          if (!error && data && Array.isArray(data)) {
+            await offlineStorage.saveVouchers(data);
+            return data;
+          }
+        } else {
+          const { data, error } = await supabase.rpc('get_agree_vouchers', {
+            p_business_id: businessId,
+            p_carriere_id: carriereId || null
           });
           if (!error && data && Array.isArray(data)) {
             await offlineStorage.saveVouchers(data);
@@ -693,41 +716,73 @@ export class DataService {
   async getLoadings(businessId: string, commercialId?: string, carriereId?: string): Promise<Loading[]> {
     if (isSupabaseConfigured && navigator.onLine) {
       try {
+        let serverLoadings: Loading[] | null = null;
+
         if (commercialId) {
           const { data, error } = await supabase.rpc('get_commercial_loadings', {
             p_commercial_id: commercialId
           });
           if (!error && data && Array.isArray(data)) {
-            const formatted: Loading[] = data.map((l: any) => ({
+            serverLoadings = data.map((l: any) => ({
               ...l,
+              commercial_name: l.commercial_name || l.commercials?.full_name,
               remaining_due: calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid)),
               payment_status: derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)),
               sync_status: 'synced'
             }));
-            await offlineStorage.saveLoadings(formatted);
-            return formatted;
+          }
+        } else {
+          const { data, error } = await supabase.rpc('get_agree_loadings', {
+            p_business_id: businessId,
+            p_carriere_id: carriereId || null
+          });
+          if (!error && data && Array.isArray(data)) {
+            serverLoadings = data.map((l: any) => ({
+              ...l,
+              commercial_name: l.commercial_name,
+              remaining_due: calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid)),
+              payment_status: derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)),
+              sync_status: 'synced'
+            }));
           }
         }
 
-        let query = supabase.from('loadings').select('*, commercials(full_name)').eq('business_id', businessId);
-        if (commercialId) {
-          query = query.eq('commercial_id', commercialId);
-        }
-        if (carriereId) {
-          query = query.eq('carriere_id', carriereId);
-        }
-        const { data, error } = await query.order('loading_date', { ascending: false });
+        if (!serverLoadings) {
+          let query = supabase.from('loadings').select('*, commercials(full_name)').eq('business_id', businessId);
+          if (commercialId) {
+            query = query.eq('commercial_id', commercialId);
+          }
+          if (carriereId) {
+            query = query.eq('carriere_id', carriereId);
+          }
+          const { data, error } = await query.order('loading_date', { ascending: false });
 
-        if (!error && data) {
-          const formatted: Loading[] = data.map((l: any) => ({
-            ...l,
-            commercial_name: l.commercials?.full_name,
-            remaining_due: calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid)),
-            payment_status: derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)),
-            sync_status: 'synced'
-          }));
-          await offlineStorage.saveLoadings(formatted);
-          return formatted;
+          if (!error && data) {
+            serverLoadings = data.map((l: any) => ({
+              ...l,
+              commercial_name: l.commercials?.full_name,
+              remaining_due: calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid)),
+              payment_status: derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)),
+              sync_status: 'synced'
+            }));
+          }
+        }
+
+        if (serverLoadings) {
+          await offlineStorage.saveLoadings(serverLoadings);
+          const locals = await offlineStorage.getAllLoadings(businessId, commercialId, carriereId);
+          const serverIds = new Set(serverLoadings.map((s) => s.id));
+          const pendingLocals = locals
+            .filter((l) => !serverIds.has(l.id))
+            .map((l) => ({
+              ...l,
+              remaining_due: calculateRemainingDue(l.total_amount, l.amount_paid),
+              payment_status: derivePaymentStatus(l.total_amount, l.amount_paid)
+            }));
+
+          return [...pendingLocals, ...serverLoadings].sort(
+            (a, b) => new Date(b.loading_date).getTime() - new Date(a.loading_date).getTime()
+          );
         }
       } catch {}
     }

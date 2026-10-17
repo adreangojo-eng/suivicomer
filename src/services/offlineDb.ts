@@ -291,6 +291,16 @@ export class OfflineStorage {
     });
   }
 
+  async deleteLoading(id: string): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('loadings', 'readwrite');
+      tx.objectStore('loadings').delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   // --- REPOSITORY: COMMERCIALS ---
   async saveCommercials(commercials: Commercial[]): Promise<void> {
     const db = await this.getDB();

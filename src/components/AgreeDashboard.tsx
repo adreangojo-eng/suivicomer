@@ -29,7 +29,8 @@ import {
   ArrowUpRight,
   Pickaxe,
   ArrowLeft,
-  Package
+  Package,
+  RefreshCw
 } from 'lucide-react';
 
 interface AgreeDashboardProps {
@@ -319,10 +320,22 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
             <Truck size={18} color="var(--primary-600)" />
             <span>Historique des Chargements ({filteredLoadings.length})</span>
           </div>
-          <button onClick={onOpenLoadingModal} className="btn btn-primary" style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem', minHeight: '36px' }}>
-            <Plus size={16} />
-            <span>Nouveau chargement</span>
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <button
+              onClick={refreshAll}
+              className="btn btn-secondary"
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem', minHeight: '36px' }}
+              title="Rafraîchir les chargements"
+              disabled={loadingData}
+            >
+              <RefreshCw size={15} className={loadingData ? 'animate-spin' : ''} />
+              <span>Actualiser</span>
+            </button>
+            <button onClick={onOpenLoadingModal} className="btn btn-primary" style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem', minHeight: '36px' }}>
+              <Plus size={16} />
+              <span>Nouveau chargement</span>
+            </button>
+          </div>
         </div>
 
         {/* FILTRES & RECHERCHE */}
@@ -358,7 +371,7 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
             onChange={(e) => setSelectedProdFilter(e.target.value)}
           >
             <option value="">Tous les produits</option>
-            {AVAILABLE_PRODUCTS.map((p) => (
+            {Array.from(new Set([...AVAILABLE_PRODUCTS, ...loadings.map((l) => l.product).filter(Boolean)])).map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>

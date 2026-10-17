@@ -17,8 +17,10 @@ import {
   Filter,
   CheckCircle2,
   Clock,
-  AlertCircle
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
+import { offlineStorage } from '../services/offlineDb';
 
 interface CommercialDashboardProps {
   user: UserProfile;
@@ -44,17 +46,40 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
   const [commercialId, setCommercialId] = useState<string>('');
 
   useEffect(() => {
-    dataService.getCommercials(business.id).then((comms) => {
-      // Rechercher le commercial lié au user
-      const matched = comms.find((c) => c.user_id === user.id) || comms[0];
-      if (matched) {
-        setCommercialId(matched.id);
-        refreshData(matched.id);
-      } else {
-        setLoadingData(false);
+    let isMounted = true;
+    const resolveCommercial = async () => {
+      setLoadingData(true);
+      try {
+        const cachedCommId = await offlineStorage.getMeta<string>('logged_commercial_id');
+        const comms = await dataService.getCommercials(business.id);
+
+        let matched = (cachedCommId ? comms.find((c) => c.id === cachedCommId) : undefined)
+                   || comms.find((c) => c.id === user.id || (c.user_id && c.user_id === user.id))
+                   || comms.find((c) => c.id === member.user_id || (c.user_id && c.user_id === member.user_id));
+
+        if (!matched && comms.length > 0) {
+          matched = comms.find((c) => c.full_name?.toLowerCase() === user.full_name?.toLowerCase()) || comms[0];
+        }
+
+        if (isMounted) {
+          if (matched) {
+            setCommercialId(matched.id);
+            await refreshData(matched.id);
+          } else {
+            setLoadingData(false);
+          }
+        }
+      } catch {
+        if (isMounted) setLoadingData(false);
       }
-    });
-  }, [business.id, user.id]);
+    };
+
+    resolveCommercial();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [business.id, user.id, member.user_id]);
 
   const refreshData = async (commId: string) => {
     setLoadingData(true);
@@ -170,6 +195,16 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
             <Truck size={18} color="var(--primary-600)" />
             <span>Mes Chargements ({filteredLoadings.length})</span>
           </div>
+          <button
+            onClick={() => commercialId && refreshData(commercialId)}
+            className="btn btn-secondary"
+            style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem', minHeight: '36px' }}
+            title="Rafraîchir mes chargements"
+            disabled={loadingData}
+          >
+            <RefreshCw size={15} className={loadingData ? 'animate-spin' : ''} />
+            <span>Actualiser</span>
+          </button>
         </div>
 
         {/* FILTRES & RECHERCHE */}
@@ -192,7 +227,7 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
             onChange={(e) => setSelectedProdFilter(e.target.value)}
           >
             <option value="">Tous les produits</option>
-            {AVAILABLE_PRODUCTS.map((p) => (
+            {Array.from(new Set([...AVAILABLE_PRODUCTS, ...loadings.map((l) => l.product).filter(Boolean)])).map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>

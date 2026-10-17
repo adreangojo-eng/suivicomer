@@ -123,7 +123,10 @@ export class SyncEngine {
 
     // 4. Déclenchement immédiat si connecté
     if (this.isOnline) {
-      this.syncPendingOperations();
+      await this.syncPendingOperations();
+      if (this.lastError) {
+        throw new Error(this.lastError);
+      }
     }
 
     return newLoading;
@@ -253,7 +256,7 @@ export class SyncEngine {
       p_loading_date: l.loading_date,
       p_product: l.product,
       p_truck_plate: l.truck_plate,
-      p_client_name: l.client_name,
+      p_client_name: l.client_name || 'Client Comptant',
       p_tonnage: l.tonnage,
       p_price_per_ton: l.price_per_ton,
       p_amount_paid: l.amount_paid,
@@ -270,11 +273,15 @@ export class SyncEngine {
     const serverId = data?.id || l.id;
     const localLoading = await offlineStorage.getLoadingById(l.id);
     if (localLoading) {
+      if (serverId !== l.id) {
+        await offlineStorage.deleteLoading(l.id);
+      }
       localLoading.id = serverId;
       localLoading.sync_status = 'synced';
       localLoading.updated_at = new Date().toISOString();
       await offlineStorage.saveLoading(localLoading);
     }
+    await offlineStorage.markVoucherLocallyReserved(l.voucher_id, true);
   }
 
   /**

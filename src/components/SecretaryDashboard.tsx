@@ -17,7 +17,8 @@ import {
   Filter,
   CheckCircle2,
   Clock,
-  Layers
+  Layers,
+  RefreshCw
 } from 'lucide-react';
 
 interface SecretaryDashboardProps {
@@ -123,11 +124,23 @@ export const SecretaryDashboard: React.FC<SecretaryDashboardProps> = ({
             <Truck size={18} color="var(--primary-600)" />
             <span>Chargements Enregistrés ({filteredLoadings.length})</span>
           </div>
-          <div style={{ fontSize: '0.78rem', color: 'var(--slate-500)' }}>
-            Permission modification paiement :{' '}
-            <strong style={{ color: member.can_edit_payments ? 'var(--paid-text)' : 'var(--unpaid-text)' }}>
-              {member.can_edit_payments ? 'Active' : "Désactivée par l'agréé"}
-            </strong>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button
+              onClick={refreshData}
+              className="btn btn-secondary"
+              style={{ padding: '0.35rem 0.65rem', fontSize: '0.78rem', minHeight: '32px' }}
+              title="Rafraîchir"
+              disabled={loadingData}
+            >
+              <RefreshCw size={14} className={loadingData ? 'animate-spin' : ''} />
+              <span>Actualiser</span>
+            </button>
+            <div style={{ fontSize: '0.78rem', color: 'var(--slate-500)' }}>
+              Permission paiement :{' '}
+              <strong style={{ color: member.can_edit_payments ? 'var(--paid-text)' : 'var(--unpaid-text)' }}>
+                {member.can_edit_payments ? 'Active' : "Désactivée"}
+              </strong>
+            </div>
           </div>
         </div>
 
@@ -164,7 +177,7 @@ export const SecretaryDashboard: React.FC<SecretaryDashboardProps> = ({
             onChange={(e) => setSelectedProdFilter(e.target.value)}
           >
             <option value="">Tous les produits</option>
-            {AVAILABLE_PRODUCTS.map((p) => (
+            {Array.from(new Set([...AVAILABLE_PRODUCTS, ...loadings.map((l) => l.product).filter(Boolean)])).map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>

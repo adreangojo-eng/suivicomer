@@ -141,6 +141,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
         await offlineStorage.setMeta('cached_profile', commUser);
         await offlineStorage.setMeta('cached_business', commBusiness);
         await offlineStorage.setMeta('cached_member', commMember);
+        await offlineStorage.setMeta('logged_commercial_id', comm.id);
 
         onAuthenticated(commUser, commBusiness, commMember, commRes.carriere);
         return;
