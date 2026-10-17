@@ -4,14 +4,37 @@ export type VoucherStatus = 'disponible' | 'utilise';
 
 export type PaymentStatus = 'non_paye' | 'partiellement_paye' | 'paye';
 
-export type ProductType = 'Sable 0/5' | 'Gravier 5/15' | 'Gravier 15/25' | 'Moellon';
+export type ProductType = string;
 
-export const AVAILABLE_PRODUCTS: ProductType[] = [
+export interface ProductItem {
+  id: string;
+  business_id: string;
+  carriere_id?: string;
+  name: string;
+  default_price_per_ton: number;
+  created_at?: string;
+}
+
+export const DEFAULT_INITIAL_PRODUCTS: Array<{ name: string; default_price_per_ton: number }> = [
+  { name: 'Sable 0/5', default_price_per_ton: 8000 },
+  { name: 'Gravier 5/15', default_price_per_ton: 10000 },
+  { name: 'Gravier 15/25', default_price_per_ton: 12000 },
+  { name: 'Moellon', default_price_per_ton: 9000 },
+];
+
+export const AVAILABLE_PRODUCTS: string[] = [
   'Sable 0/5',
   'Gravier 5/15',
   'Gravier 15/25',
   'Moellon'
 ];
+
+export const PAYMENT_REFERENCE_OPTIONS = [
+  'Versé dans le compte',
+  'Dépôt par téléphone',
+  'Espèces'
+] as const;
+export type PaymentReferenceOption = typeof PAYMENT_REFERENCE_OPTIONS[number];
 
 export interface UserProfile {
   id: string;
@@ -111,7 +134,7 @@ export interface Loading {
   loading_date: string;
   product: ProductType;
   truck_plate: string;
-  client_name: string;
+  client_name?: string;
   tonnage: number;
   price_per_ton: number;
   total_amount: number;

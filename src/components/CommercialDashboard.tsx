@@ -90,8 +90,9 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
       const q = searchQuery.toLowerCase();
       const matchVoucher = l.voucher_number.toString().includes(q);
       const matchPlate = l.truck_plate.toLowerCase().includes(q);
-      const matchClient = l.client_name.toLowerCase().includes(q);
-      if (!matchVoucher && !matchPlate && !matchClient) return false;
+      const matchClient = (l.client_name || '').toLowerCase().includes(q);
+      const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
+      if (!matchVoucher && !matchPlate && !matchClient && !matchRef) return false;
     }
     if (selectedProdFilter && l.product !== selectedProdFilter) return false;
     if (selectedStatusFilter && l.payment_status !== selectedStatusFilter) return false;
@@ -229,7 +230,7 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
                   <th>Bon N°</th>
                   <th>Produit</th>
                   <th>Plaque</th>
-                  <th>Client</th>
+                  <th>Versement</th>
                   <th>Tonnage</th>
                   <th>Prix/t</th>
                   <th>Total Facturé</th>
@@ -247,7 +248,9 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
                     </td>
                     <td>{l.product}</td>
                     <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{l.truck_plate}</td>
-                    <td style={{ fontWeight: 600 }}>{l.client_name}</td>
+                    <td style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--slate-700)' }}>
+                      {l.payment_ref || l.client_name || '-'}
+                    </td>
                     <td>{formatTonnage(l.tonnage)}</td>
                     <td>{formatFCFA(l.price_per_ton)}</td>
                     <td style={{ fontWeight: 700 }}>{formatFCFA(l.total_amount)}</td>

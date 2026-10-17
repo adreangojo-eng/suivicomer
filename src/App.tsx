@@ -14,6 +14,7 @@ import { CommercialsModal } from './components/CommercialsModal';
 import { SecretariesModal } from './components/SecretariesModal';
 import { PaymentModal } from './components/PaymentModal';
 import { ConflictsModal } from './components/ConflictsModal';
+import { ProductsModal } from './components/ProductsModal';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -38,6 +39,7 @@ export const App: React.FC = () => {
   const [showRangeModal, setShowRangeModal] = useState(false);
   const [showCommercialsModal, setShowCommercialsModal] = useState(false);
   const [showSecretariesModal, setShowSecretariesModal] = useState(false);
+  const [showProductsModal, setShowProductsModal] = useState(false);
   const [paymentModalLoading, setPaymentModalLoading] = useState<Loading | null>(null);
   const [showConflictsModal, setShowConflictsModal] = useState(false);
 
@@ -169,6 +171,7 @@ export const App: React.FC = () => {
             onOpenRangeModal={() => setShowRangeModal(true)}
             onOpenCommercialsModal={() => setShowCommercialsModal(true)}
             onOpenSecretariesModal={() => setShowSecretariesModal(true)}
+            onOpenProductsModal={() => setShowProductsModal(true)}
             onOpenPaymentModal={(loading) => setPaymentModalLoading(loading)}
           />
         )}
@@ -237,6 +240,16 @@ export const App: React.FC = () => {
           business={business}
           onClose={() => setShowSecretariesModal(false)}
           onUpdated={handleRefresh}
+        />
+      )}
+
+      {showProductsModal && (
+        <ProductsModal
+          business={business}
+          carriere={activeCarriere}
+          user={user}
+          onClose={() => setShowProductsModal(false)}
+          onProductsUpdated={handleRefresh}
         />
       )}
 

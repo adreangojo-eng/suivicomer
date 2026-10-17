@@ -12,7 +12,9 @@ import {
   PaymentStatus,
   BusinessMember,
   Carriere,
-  Business
+  Business,
+  ProductItem,
+  DEFAULT_INITIAL_PRODUCTS
 } from '../types';
 import {
   calculateTotalAmount,
@@ -414,6 +416,114 @@ export class DataService {
   }
 
   // ====================================================================
+  // 1.1 PRODUITS & TARIFS PERSONNALISÉS
+  // ====================================================================
+
+  async getProducts(businessId: string, carriereId?: string): Promise<ProductItem[]> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { data, error } = await supabase.rpc('get_business_products', {
+          p_business_id: businessId,
+          p_carriere_id: carriereId || null
+        });
+        if (!error && data && Array.isArray(data) && data.length > 0) {
+          await offlineStorage.saveProducts(data);
+          return data;
+        }
+
+        // Si la table est encore vide, on tente un fallback select direct
+        const { data: directData, error: directErr } = await supabase
+          .from('products')
+          .select('*')
+          .eq('business_id', businessId);
+        if (!directErr && directData && directData.length > 0) {
+          await offlineStorage.saveProducts(directData);
+          return directData;
+        }
+      } catch {}
+    }
+
+    const locals = await offlineStorage.getAllProducts(businessId, carriereId);
+    if (locals.length > 0) return locals;
+
+    // Produits initiaux par défaut
+    const defaults: ProductItem[] = DEFAULT_INITIAL_PRODUCTS.map((p) => ({
+      id: generateUuid(),
+      business_id: businessId,
+      carriere_id: carriereId,
+      name: p.name,
+      default_price_per_ton: p.default_price_per_ton,
+      created_at: new Date().toISOString()
+    }));
+    await offlineStorage.saveProducts(defaults);
+    return defaults;
+  }
+
+  async createProduct(params: {
+    businessId: string;
+    carriereId?: string;
+    name: string;
+    defaultPricePerTon: number;
+  }): Promise<{ success: boolean; error?: string; product?: ProductItem }> {
+    const trimmed = params.name.trim();
+    if (!trimmed) {
+      return { success: false, error: 'Le nom du produit est obligatoire.' };
+    }
+    if (params.defaultPricePerTon < 0 || isNaN(params.defaultPricePerTon)) {
+      return { success: false, error: 'Le prix par tonne ne peut pas être négatif.' };
+    }
+
+    const newProd: ProductItem = {
+      id: generateUuid(),
+      business_id: params.businessId,
+      carriere_id: params.carriereId,
+      name: trimmed,
+      default_price_per_ton: params.defaultPricePerTon,
+      created_at: new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { data, error } = await supabase
+          .from('products')
+          .insert({
+            business_id: params.businessId,
+            carriere_id: params.carriereId || null,
+            name: trimmed,
+            default_price_per_ton: params.defaultPricePerTon
+          })
+          .select()
+          .single();
+
+        if (!error && data) {
+          await offlineStorage.saveProducts([data]);
+          return { success: true, product: data };
+        } else if (error) {
+          return { success: false, error: error.message };
+        }
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+
+    await offlineStorage.saveProducts([newProd]);
+    return { success: true, product: newProd };
+  }
+
+  async deleteProduct(id: string): Promise<{ success: boolean; error?: string }> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        const { error } = await supabase.from('products').delete().eq('id', id);
+        if (error) return { success: false, error: error.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+    await offlineStorage.deleteProduct(id);
+    return { success: true };
+  }
+
+  // ====================================================================
   // 2. PLAGES DE BONS & BONS INDIVIDUELS
   // ====================================================================
 
@@ -462,7 +572,7 @@ export class DataService {
           query = query.eq('commercial_id', commercialId);
         }
         if (carriereId) {
-          query = query.eq('carriere_id', carriereId);
+          query = query.or(`carriere_id.eq.${carriereId},carriere_id.is.null`);
         }
         const { data, error } = await query.order('voucher_number', { ascending: true });
         if (!error && data) {
@@ -483,6 +593,11 @@ export class DataService {
     commercialId: string,
     carriereId?: string
   ): Promise<LoadingVoucher[]> {
+    if (isSupabaseConfigured && navigator.onLine) {
+      try {
+        await this.getVouchers(businessId, commercialId, carriereId);
+      } catch {}
+    }
     return offlineStorage.getAvailableVouchersForCommercial(businessId, commercialId, carriereId);
   }
 
@@ -519,7 +634,8 @@ export class DataService {
           p_commercial_id: params.commercialId,
           p_start_num: params.startNum,
           p_end_num: params.endNum,
-          p_user_id: params.userId || null
+          p_user_id: params.userId || null,
+          p_carriere_id: params.carriereId || null
         });
 
         if (error) {
@@ -636,7 +752,7 @@ export class DataService {
     loadingDate: string;
     product: ProductType;
     truckPlate: string;
-    clientName: string;
+    clientName?: string;
     tonnage: number;
     pricePerTon: number;
     amountPaid: number;
@@ -673,7 +789,7 @@ export class DataService {
         loading_date: params.loadingDate,
         product: params.product,
         truck_plate: params.truckPlate.trim().toUpperCase(),
-        client_name: params.clientName.trim(),
+        client_name: params.clientName?.trim() || 'Client Comptant',
         tonnage: params.tonnage,
         price_per_ton: params.pricePerTon,
         total_amount: totalAmount,

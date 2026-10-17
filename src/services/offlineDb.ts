@@ -1,7 +1,7 @@
-import { Loading, LoadingVoucher, Commercial, BonRange, SyncOperation, SyncConflict, UserProfile, Carriere } from '../types';
+import { Loading, LoadingVoucher, Commercial, BonRange, SyncOperation, SyncConflict, UserProfile, Carriere, ProductItem } from '../types';
 
 const DB_NAME = 'suivicomer_offline_v2';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export class OfflineStorage {
   private dbPromise: Promise<IDBDatabase> | null = null;
@@ -58,6 +58,13 @@ export class OfflineStorage {
           const rangeStore = db.createObjectStore('ranges', { keyPath: 'id' });
           rangeStore.createIndex('by_business', 'business_id', { unique: false });
           rangeStore.createIndex('by_carriere', 'carriere_id', { unique: false });
+        }
+
+        // Store: products (catalogue produits & tarifs par carrière/entreprise)
+        if (!db.objectStoreNames.contains('products')) {
+          const prodStore = db.createObjectStore('products', { keyPath: 'id' });
+          prodStore.createIndex('by_business', 'business_id', { unique: false });
+          prodStore.createIndex('by_carriere', 'carriere_id', { unique: false });
         }
 
         // Store: sync_queue
@@ -450,9 +457,53 @@ export class OfflineStorage {
     });
   }
 
+  // --- REPOSITORY: PRODUCTS (CATALOGUE PRODUITS & TARIFS) ---
+  async saveProducts(products: ProductItem[]): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('products', 'readwrite');
+      const store = tx.objectStore('products');
+      products.forEach((p) => store.put(p));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getAllProducts(businessId?: string, carriereId?: string): Promise<ProductItem[]> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('products', 'readonly');
+      const store = tx.objectStore('products');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        let items = (req.result || []) as ProductItem[];
+        if (businessId) {
+          items = items.filter((p) => p.business_id === businessId);
+        }
+        if (carriereId) {
+          items = items.filter((p) => !p.carriere_id || p.carriere_id === carriereId);
+        }
+        items.sort((a, b) => a.name.localeCompare(b.name));
+        resolve(items);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async deleteProduct(id: string): Promise<void> {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('products', 'readwrite');
+      const store = tx.objectStore('products');
+      store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async clearLocalCache(): Promise<void> {
     const db = await this.getDB();
-    const stores = ['carrieres', 'vouchers', 'loadings', 'commercials', 'ranges', 'app_meta'];
+    const stores = ['carrieres', 'vouchers', 'loadings', 'commercials', 'ranges', 'products', 'app_meta'];
     return new Promise((resolve, reject) => {
       const tx = db.transaction(stores, 'readwrite');
       stores.forEach((s) => tx.objectStore(s).clear());
