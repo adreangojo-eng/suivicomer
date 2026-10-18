@@ -115,3 +115,29 @@ export function formatDateFr(dateStr?: string): string {
     return dateStr;
   }
 }
+
+/**
+ * Comparaison souple et robuste de noms de produits (ex: "Gravier 15/25" et "15/25", "Sable 0/5" et "0/5")
+ */
+export function matchesProduct(loadingProduct?: string, filterProduct?: string): boolean {
+  if (!filterProduct || !filterProduct.trim()) return true;
+  if (!loadingProduct || !loadingProduct.trim()) return false;
+
+  const lp = loadingProduct.toLowerCase().trim();
+  const fp = filterProduct.toLowerCase().trim();
+
+  if (lp === fp) return true;
+  if (lp.includes(fp) || fp.includes(lp)) return true;
+
+  // Extraction des granulométries de type "0/5", "5/15", "15/25", etc.
+  const grainRegex = /\b\d+\s*\/\s*\d+\b/g;
+  const lpGrains = (lp.match(grainRegex) || []).map((g) => g.replace(/\s+/g, ''));
+  const fpGrains = (fp.match(grainRegex) || []).map((g) => g.replace(/\s+/g, ''));
+
+  if (lpGrains.length > 0 && fpGrains.length > 0) {
+    return lpGrains.some((g) => fpGrains.includes(g));
+  }
+
+  return false;
+}
+

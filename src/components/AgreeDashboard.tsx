@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   UserProfile,
   Business,
@@ -12,7 +12,14 @@ import {
   AVAILABLE_PRODUCTS
 } from '../types';
 import { dataService } from '../services/dataService';
-import { formatFCFA, formatTonnage, formatDateFr } from '../utils/calculations';
+import {
+  formatFCFA,
+  formatTonnage,
+  formatDateFr,
+  derivePaymentStatus,
+  calculateRemainingDue,
+  matchesProduct
+} from '../utils/calculations';
 import {
   Users,
   Layers,
@@ -30,8 +37,12 @@ import {
   Pickaxe,
   ArrowLeft,
   Package,
-  RefreshCw
+  RefreshCw,
+  Eye,
+  X,
+  RotateCcw
 } from 'lucide-react';
+import { CommercialDetailModal } from './CommercialDetailModal';
 
 interface AgreeDashboardProps {
   user: UserProfile;
@@ -71,6 +82,9 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
   const [selectedProdFilter, setSelectedProdFilter] = useState('');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('');
 
+  // Commercial sélectionné pour consultation détaillée (modal)
+  const [selectedCommercialForDetail, setSelectedCommercialForDetail] = useState<Commercial | null>(null);
+
   const refreshAll = async () => {
     setLoadingData(true);
     try {
@@ -79,9 +93,27 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
         dataService.getLoadings(business.id, undefined, carriere.id),
         dataService.getCommercials(business.id, carriere.id),
       ]);
+
+      // Fusionner tous les commerciaux enregistrés avec ceux présents dans les chargements
+      const commMap = new Map<string, Commercial>();
+      c.forEach((comm) => commMap.set(comm.id, comm));
+      l.forEach((load) => {
+        if (load.commercial_id && !commMap.has(load.commercial_id)) {
+          commMap.set(load.commercial_id, {
+            id: load.commercial_id,
+            business_id: business.id,
+            carriere_id: carriere.id,
+            full_name: load.commercial_name || 'Commercial',
+            is_active: true,
+            created_at: load.created_at || new Date().toISOString(),
+          });
+        }
+      });
+      const allComms = Array.from(commMap.values());
+
       setMetrics(m);
       setLoadings(l);
-      setCommercials(c);
+      setCommercials(allComms);
     } finally {
       setLoadingData(false);
     }
@@ -91,21 +123,145 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
     refreshAll();
   }, [business.id, carriere.id]);
 
-  // Filtrage des chargements
-  const filteredLoadings = loadings.filter((l) => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const matchVoucher = l.voucher_number.toString().includes(q);
-      const matchPlate = l.truck_plate.toLowerCase().includes(q);
-      const matchClient = (l.client_name || '').toLowerCase().includes(q);
-      const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
-      if (!matchVoucher && !matchPlate && !matchClient && !matchRef) return false;
+  // Options de produits distincts (fusion des produits réels et du catalogue de base)
+  const distinctProductOptions = useMemo(() => {
+    const list: string[] = [];
+    const seen = new Set<string>();
+
+    loadings.forEach((l) => {
+      const prod = l.product?.trim();
+      if (prod && !seen.has(prod)) {
+        seen.add(prod);
+        list.push(prod);
+      }
+    });
+
+    AVAILABLE_PRODUCTS.forEach((ap) => {
+      const alreadyHas = list.some((item) => matchesProduct(item, ap));
+      if (!alreadyHas && !seen.has(ap)) {
+        seen.add(ap);
+        list.push(ap);
+      }
+    });
+
+    return list;
+  }, [loadings]);
+
+  // Filtrage robuste et dynamique des chargements
+  const filteredLoadings = useMemo(() => {
+    return loadings.filter((l) => {
+      // 1. Recherche par mot-clé (bon, plaque, client, ref, commercial, produit)
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchVoucher = l.voucher_number?.toString().includes(q);
+        const matchPlate = (l.truck_plate || '').toLowerCase().includes(q);
+        const matchClient = (l.client_name || '').toLowerCase().includes(q);
+        const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
+        const matchComm = (l.commercial_name || '').toLowerCase().includes(q);
+        const matchProd = (l.product || '').toLowerCase().includes(q);
+        if (!matchVoucher && !matchPlate && !matchClient && !matchRef && !matchComm && !matchProd) {
+          return false;
+        }
+      }
+
+      // 2. Filtre Commercial (par ID ou nom)
+      if (selectedCommFilter) {
+        const selectedComm = commercials.find((c) => c.id === selectedCommFilter);
+        const matchId = l.commercial_id === selectedCommFilter;
+        const matchName =
+          selectedComm &&
+          l.commercial_name &&
+          l.commercial_name.toLowerCase().trim() === selectedComm.full_name.toLowerCase().trim();
+        if (!matchId && !matchName) return false;
+      }
+
+      // 3. Filtre Produit (comparaison flexible granulométrique et nominale)
+      if (selectedProdFilter && !matchesProduct(l.product, selectedProdFilter)) {
+        return false;
+      }
+
+      // 4. Filtre Statut de paiement (calculé strictement d'après montants)
+      if (selectedStatusFilter) {
+        const status = derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid));
+        if (status !== selectedStatusFilter) return false;
+      }
+
+      return true;
+    });
+  }, [loadings, searchQuery, selectedCommFilter, selectedProdFilter, selectedStatusFilter, commercials]);
+
+  // Calcul des métriques pour les chargements filtrés
+  const filteredTonnage = filteredLoadings.reduce((sum, l) => sum + Number(l.tonnage || 0), 0);
+  const filteredInvoiced = filteredLoadings.reduce((sum, l) => sum + Number(l.total_amount || 0), 0);
+  const filteredPaid = filteredLoadings.reduce((sum, l) => sum + Number(l.amount_paid || 0), 0);
+  const filteredDue = Math.max(0, filteredInvoiced - filteredPaid);
+
+  // Nombre de chargements par statut (sur l'ensemble filtré par commercial/produit/recherche)
+  const loadingsForStatusCounts = useMemo(() => {
+    return loadings.filter((l) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchVoucher = l.voucher_number?.toString().includes(q);
+        const matchPlate = (l.truck_plate || '').toLowerCase().includes(q);
+        const matchClient = (l.client_name || '').toLowerCase().includes(q);
+        const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
+        const matchComm = (l.commercial_name || '').toLowerCase().includes(q);
+        const matchProd = (l.product || '').toLowerCase().includes(q);
+        if (!matchVoucher && !matchPlate && !matchClient && !matchRef && !matchComm && !matchProd) {
+          return false;
+        }
+      }
+      if (selectedCommFilter) {
+        const selectedComm = commercials.find((c) => c.id === selectedCommFilter);
+        const matchId = l.commercial_id === selectedCommFilter;
+        const matchName =
+          selectedComm &&
+          l.commercial_name &&
+          l.commercial_name.toLowerCase().trim() === selectedComm.full_name.toLowerCase().trim();
+        if (!matchId && !matchName) return false;
+      }
+      if (selectedProdFilter && !matchesProduct(l.product, selectedProdFilter)) {
+        return false;
+      }
+      return true;
+    });
+  }, [loadings, searchQuery, selectedCommFilter, selectedProdFilter, commercials]);
+
+  const unpaidCount = loadingsForStatusCounts.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'non_paye'
+  ).length;
+  const partialCount = loadingsForStatusCounts.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'partiellement_paye'
+  ).length;
+  const paidCount = loadingsForStatusCounts.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'paye'
+  ).length;
+
+  // Filtrer l'historique par un commercial en particulier et scroller
+  const handleFilterByCommercial = (commId: string) => {
+    if (selectedCommFilter === commId) {
+      setSelectedCommFilter('');
+    } else {
+      setSelectedCommFilter(commId);
+      const el = document.getElementById('loadings-history-section');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
-    if (selectedCommFilter && l.commercial_id !== selectedCommFilter) return false;
-    if (selectedProdFilter && l.product !== selectedProdFilter) return false;
-    if (selectedStatusFilter && l.payment_status !== selectedStatusFilter) return false;
-    return true;
-  });
+  };
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setSelectedCommFilter('');
+    setSelectedProdFilter('');
+    setSelectedStatusFilter('');
+  };
+
+  const hasActiveFilters = Boolean(
+    searchQuery || selectedCommFilter || selectedProdFilter || selectedStatusFilter
+  );
+
+  const selectedCommObj = commercials.find((c) => c.id === selectedCommFilter);
 
   return (
     <div>
@@ -188,7 +344,7 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
       <div className="metrics-grid">
         <div className="kpi-card teal">
           <div className="kpi-label">Commerciaux Actifs</div>
-          <div className="kpi-value">{metrics?.activeCommercialsCount ?? 0}</div>
+          <div className="kpi-value">{metrics?.activeCommercialsCount ?? commercials.filter((c) => c.is_active).length}</div>
           <div className="kpi-sub">Dans cette carrière : {commercials.length}</div>
         </div>
 
@@ -202,25 +358,25 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
 
         <div className="kpi-card emerald">
           <div className="kpi-label">Total Chargements</div>
-          <div className="kpi-value">{metrics?.totalLoadingsCount ?? 0}</div>
-          <div className="kpi-sub">Tonnage : {formatTonnage(metrics?.totalTonnageLoaded ?? 0)}</div>
+          <div className="kpi-value">{metrics?.totalLoadingsCount ?? loadings.length}</div>
+          <div className="kpi-sub">Tonnage : {formatTonnage(metrics?.totalTonnageLoaded ?? loadings.reduce((s, l) => s + Number(l.tonnage || 0), 0))}</div>
         </div>
 
         <div className="kpi-card teal">
           <div className="kpi-label">Montant Facturé</div>
-          <div className="kpi-value">{formatFCFA(metrics?.totalAmountInvoiced ?? 0)}</div>
+          <div className="kpi-value">{formatFCFA(metrics?.totalAmountInvoiced ?? loadings.reduce((s, l) => s + Number(l.total_amount || 0), 0))}</div>
           <div className="kpi-sub">Chiffre d'affaires de la carrière</div>
         </div>
 
         <div className="kpi-card emerald">
           <div className="kpi-label">Total Déjà Payé</div>
-          <div className="kpi-value">{formatFCFA(metrics?.totalAmountPaid ?? 0)}</div>
+          <div className="kpi-value">{formatFCFA(metrics?.totalAmountPaid ?? loadings.reduce((s, l) => s + Number(l.amount_paid || 0), 0))}</div>
           <div className="kpi-sub">Encaissé sur site</div>
         </div>
 
         <div className="kpi-card rose">
           <div className="kpi-label">Montant Restant Dû</div>
-          <div className="kpi-value">{formatFCFA(metrics?.totalAmountRemaining ?? 0)}</div>
+          <div className="kpi-value">{formatFCFA(metrics?.totalAmountRemaining ?? Math.max(0, (metrics?.totalAmountInvoiced ?? 0) - (metrics?.totalAmountPaid ?? 0)))}</div>
           <div className="kpi-sub">À recouvrer auprès des clients</div>
         </div>
 
@@ -237,14 +393,18 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
         </div>
       </div>
 
-      {/* RÉSUMÉ DES COMMERCIAUX */}
+      {/* RÉSUMÉ DES COMMERCIAUX DE LA CARRIÈRE */}
       <div className="card-section">
         <div className="section-header">
           <div className="section-title">
             <Users size={18} color="var(--primary-600)" />
             <span>Commerciaux de la Carrière ({commercials.length})</span>
           </div>
-          <button onClick={onOpenCommercialsModal} className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem', minHeight: '34px' }}>
+          <button
+            onClick={onOpenCommercialsModal}
+            className="btn btn-secondary"
+            style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem', minHeight: '34px' }}
+          >
             Gérer les commerciaux
           </button>
         </div>
@@ -274,26 +434,62 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
                   <th>Total Facturé</th>
                   <th>Total Payé</th>
                   <th>Reste Dû</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {commercials.map((c) => {
-                  const commLoadings = loadings.filter((l) => l.commercial_id === c.id);
-                  const tonnage = commLoadings.reduce((sum, l) => sum + Number(l.tonnage), 0);
-                  const invoiced = commLoadings.reduce((sum, l) => sum + Number(l.total_amount), 0);
-                  const paid = commLoadings.reduce((sum, l) => sum + Number(l.amount_paid), 0);
-                  const due = invoiced - paid;
+                  const commLoadings = loadings.filter(
+                    (l) =>
+                      l.commercial_id === c.id ||
+                      (l.commercial_name && l.commercial_name.toLowerCase().trim() === c.full_name.toLowerCase().trim())
+                  );
+                  const tonnage = commLoadings.reduce((sum, l) => sum + Number(l.tonnage || 0), 0);
+                  const invoiced = commLoadings.reduce((sum, l) => sum + Number(l.total_amount || 0), 0);
+                  const paid = commLoadings.reduce((sum, l) => sum + Number(l.amount_paid || 0), 0);
+                  const due = Math.max(0, invoiced - paid);
+                  const isFiltered = selectedCommFilter === c.id;
 
                   return (
-                    <tr key={c.id}>
-                      <td style={{ fontWeight: 700 }}>{c.full_name}</td>
+                    <tr
+                      key={c.id}
+                      style={{
+                        background: isFiltered ? 'var(--primary-50)' : undefined,
+                        borderLeft: isFiltered ? '3px solid var(--primary-600)' : undefined,
+                      }}
+                    >
+                      <td style={{ fontWeight: 700, color: 'var(--slate-900)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                          <span>{c.full_name}</span>
+                          {c.is_secretary && (
+                            <span
+                              style={{
+                                fontSize: '0.65rem',
+                                padding: '0.1rem 0.4rem',
+                                background: '#fef3c7',
+                                color: '#92400e',
+                                borderRadius: '4px',
+                                fontWeight: 700,
+                              }}
+                            >
+                              ⭐ Secrétaire
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td>
                         <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--primary-700)' }}>
                           {c.access_code || c.phone || '-'}
                         </span>
                       </td>
                       <td>
-                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: c.is_active ? 'var(--paid-text)' : 'var(--slate-400)' }}>
+                        <span
+                          style={{
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            color: c.is_active ? 'var(--paid-text)' : 'var(--slate-400)',
+                          }}
+                        >
                           {c.is_active ? '● Actif' : '○ Inactif'}
                         </span>
                       </td>
@@ -303,6 +499,47 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
                       <td style={{ color: 'var(--paid-text)', fontWeight: 600 }}>{formatFCFA(paid)}</td>
                       <td style={{ color: due > 0 ? 'var(--unpaid-text)' : 'var(--slate-500)', fontWeight: 700 }}>
                         {formatFCFA(due)}
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedCommercialForDetail(c)}
+                            className="btn btn-primary"
+                            style={{
+                              padding: '0.28rem 0.55rem',
+                              fontSize: '0.72rem',
+                              minHeight: '28px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.3rem',
+                            }}
+                            title={`Consulter le tableau de bord réservé à ${c.full_name}`}
+                          >
+                            <Eye size={13} />
+                            <span>Consulter</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleFilterByCommercial(c.id)}
+                            className="btn btn-secondary"
+                            style={{
+                              padding: '0.28rem 0.55rem',
+                              fontSize: '0.72rem',
+                              minHeight: '28px',
+                              background: isFiltered ? 'var(--primary-600)' : undefined,
+                              color: isFiltered ? 'white' : undefined,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.3rem',
+                            }}
+                            title="Filtrer l'historique des chargements sur ce commercial"
+                          >
+                            <Filter size={13} />
+                            <span>{isFiltered ? '● Filtre Actif' : 'Filtrer'}</span>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -314,7 +551,7 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
       </div>
 
       {/* HISTORIQUE ET SUIVI DES CHARGEMENTS DE LA CARRIÈRE */}
-      <div className="card-section">
+      <div className="card-section" id="loadings-history-section">
         <div className="section-header">
           <div className="section-title">
             <Truck size={18} color="var(--primary-600)" />
@@ -331,7 +568,11 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
               <RefreshCw size={15} className={loadingData ? 'animate-spin' : ''} />
               <span>Actualiser</span>
             </button>
-            <button onClick={onOpenLoadingModal} className="btn btn-primary" style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem', minHeight: '36px' }}>
+            <button
+              onClick={onOpenLoadingModal}
+              className="btn btn-primary"
+              style={{ padding: '0.4rem 0.85rem', fontSize: '0.8rem', minHeight: '36px' }}
+            >
               <Plus size={16} />
               <span>Nouveau chargement</span>
             </button>
@@ -339,7 +580,15 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
         </div>
 
         {/* FILTRES & RECHERCHE */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.65rem', marginBottom: '1.25rem' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: '0.65rem',
+            marginBottom: '0.85rem',
+          }}
+        >
+          {/* 1. Recherche globale */}
           <div style={{ position: 'relative' }}>
             <input
               type="text"
@@ -349,15 +598,20 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{ paddingLeft: '2rem' }}
             />
-            <Search size={16} color="var(--slate-400)" style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)' }} />
+            <Search
+              size={16}
+              color="var(--slate-400)"
+              style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)' }}
+            />
           </div>
 
+          {/* 2. Filtre Commercial */}
           <select
             className="form-select"
             value={selectedCommFilter}
             onChange={(e) => setSelectedCommFilter(e.target.value)}
           >
-            <option value="">Tous les commerciaux</option>
+            <option value="">Tous les commerciaux ({commercials.length})</option>
             {commercials.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.full_name}
@@ -365,41 +619,309 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
             ))}
           </select>
 
+          {/* 3. Filtre Produit */}
           <select
             className="form-select"
             value={selectedProdFilter}
             onChange={(e) => setSelectedProdFilter(e.target.value)}
           >
-            <option value="">Tous les produits</option>
-            {Array.from(new Set([...AVAILABLE_PRODUCTS, ...loadings.map((l) => l.product).filter(Boolean)])).map((p) => (
+            <option value="">Tous les produits ({distinctProductOptions.length})</option>
+            {distinctProductOptions.map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>
             ))}
           </select>
 
+          {/* 4. Filtre Statut de Paiement */}
           <select
             className="form-select"
             value={selectedStatusFilter}
             onChange={(e) => setSelectedStatusFilter(e.target.value)}
           >
             <option value="">Tous les statuts de paiement</option>
-            <option value="non_paye">Non Payé</option>
-            <option value="partiellement_paye">Partiellement Payé</option>
-            <option value="paye">Entièrement Payé</option>
+            <option value="non_paye">Non Payé ({unpaidCount})</option>
+            <option value="partiellement_paye">Partiellement Payé ({partialCount})</option>
+            <option value="paye">Entièrement Payé ({paidCount})</option>
           </select>
+        </div>
+
+        {/* ONGLETS / CHIPS DE FILTRAGE RAPIDE DU STATUT */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            marginBottom: '0.85rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setSelectedStatusFilter('')}
+            style={{
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              borderRadius: '20px',
+              border: '1.5px solid',
+              borderColor: selectedStatusFilter === '' ? 'var(--primary-600)' : 'var(--slate-200)',
+              background: selectedStatusFilter === '' ? 'var(--primary-50)' : 'white',
+              color: selectedStatusFilter === '' ? 'var(--primary-700)' : 'var(--slate-600)',
+              cursor: 'pointer',
+            }}
+          >
+            Tous ({loadingsForStatusCounts.length})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSelectedStatusFilter(selectedStatusFilter === 'non_paye' ? '' : 'non_paye')}
+            style={{
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              borderRadius: '20px',
+              border: '1.5px solid',
+              borderColor: selectedStatusFilter === 'non_paye' ? '#dc2626' : 'var(--slate-200)',
+              background: selectedStatusFilter === 'non_paye' ? '#fee2e2' : 'white',
+              color: selectedStatusFilter === 'non_paye' ? '#991b1b' : 'var(--slate-600)',
+              cursor: 'pointer',
+            }}
+          >
+            ● Non Payés ({unpaidCount})
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              setSelectedStatusFilter(selectedStatusFilter === 'partiellement_paye' ? '' : 'partiellement_paye')
+            }
+            style={{
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              borderRadius: '20px',
+              border: '1.5px solid',
+              borderColor: selectedStatusFilter === 'partiellement_paye' ? '#d97706' : 'var(--slate-200)',
+              background: selectedStatusFilter === 'partiellement_paye' ? '#fef3c7' : 'white',
+              color: selectedStatusFilter === 'partiellement_paye' ? '#92400e' : 'var(--slate-600)',
+              cursor: 'pointer',
+            }}
+          >
+            ● Partiellement Payés ({partialCount})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSelectedStatusFilter(selectedStatusFilter === 'paye' ? '' : 'paye')}
+            style={{
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              borderRadius: '20px',
+              border: '1.5px solid',
+              borderColor: selectedStatusFilter === 'paye' ? '#16a34a' : 'var(--slate-200)',
+              background: selectedStatusFilter === 'paye' ? '#dcfce7' : 'white',
+              color: selectedStatusFilter === 'paye' ? '#166534' : 'var(--slate-600)',
+              cursor: 'pointer',
+            }}
+          >
+            ● Entièrement Payés ({paidCount})
+          </button>
+        </div>
+
+        {/* BANDEAU D'ÉTAT DES FILTRES ACTIFS */}
+        {hasActiveFilters && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 0.85rem',
+              background: 'var(--slate-100)',
+              borderRadius: '8px',
+              marginBottom: '1rem',
+              flexWrap: 'wrap',
+              fontSize: '0.78rem',
+            }}
+          >
+            <span style={{ fontWeight: 700, color: 'var(--slate-600)' }}>Filtres actifs :</span>
+
+            {selectedCommFilter && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  background: 'white',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '16px',
+                  border: '1px solid var(--slate-300)',
+                  fontWeight: 600,
+                  color: 'var(--primary-800)',
+                }}
+              >
+                Commercial : {selectedCommObj?.full_name || 'Sélectionné'}
+                <button
+                  type="button"
+                  onClick={() => setSelectedCommFilter('')}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
+
+            {selectedProdFilter && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  background: 'white',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '16px',
+                  border: '1px solid var(--slate-300)',
+                  fontWeight: 600,
+                  color: 'var(--primary-800)',
+                }}
+              >
+                Produit : {selectedProdFilter}
+                <button
+                  type="button"
+                  onClick={() => setSelectedProdFilter('')}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
+
+            {selectedStatusFilter && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  background: 'white',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '16px',
+                  border: '1px solid var(--slate-300)',
+                  fontWeight: 600,
+                  color: 'var(--primary-800)',
+                }}
+              >
+                Statut :{' '}
+                {selectedStatusFilter === 'paye'
+                  ? 'Entièrement Payé'
+                  : selectedStatusFilter === 'partiellement_paye'
+                  ? 'Partiellement Payé'
+                  : 'Non Payé'}
+                <button
+                  type="button"
+                  onClick={() => setSelectedStatusFilter('')}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
+
+            {searchQuery && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  background: 'white',
+                  padding: '0.2rem 0.55rem',
+                  borderRadius: '16px',
+                  border: '1px solid var(--slate-300)',
+                  fontWeight: 600,
+                  color: 'var(--primary-800)',
+                }}
+              >
+                Recherche : "{searchQuery}"
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={handleResetFilters}
+              className="btn btn-secondary"
+              style={{
+                marginLeft: 'auto',
+                fontSize: '0.72rem',
+                padding: '0.25rem 0.55rem',
+                minHeight: '26px',
+              }}
+            >
+              <RotateCcw size={12} />
+              <span>Réinitialiser tout</span>
+            </button>
+          </div>
+        )}
+
+        {/* RÉSUMÉ FINANCIER DU FILTRE ACTIF */}
+        <div
+          style={{
+            fontSize: '0.78rem',
+            color: 'var(--slate-500)',
+            marginBottom: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span>
+            Affichage de <strong>{filteredLoadings.length}</strong> chargement(s) sur {loadings.length}
+          </span>
+          {filteredLoadings.length > 0 && (
+            <>
+              <span>•</span>
+              <span>Tonnage : <strong>{formatTonnage(filteredTonnage)}</strong></span>
+              <span>•</span>
+              <span>Facturé : <strong>{formatFCFA(filteredInvoiced)}</strong></span>
+              <span>•</span>
+              <span style={{ color: 'var(--paid-text)' }}>Payé : <strong>{formatFCFA(filteredPaid)}</strong></span>
+              <span>•</span>
+              <span style={{ color: filteredDue > 0 ? 'var(--unpaid-text)' : 'inherit' }}>
+                Reste dû : <strong>{formatFCFA(filteredDue)}</strong>
+              </span>
+            </>
+          )}
         </div>
 
         {/* TABLEAU DES CHARGEMENTS */}
         {filteredLoadings.length === 0 ? (
           <div className="empty-state">
             <Truck className="empty-icon" />
-            <div className="empty-title">Aucun chargement dans cette carrière</div>
+            <div className="empty-title">Aucun chargement ne correspond</div>
             <div className="empty-desc">
               {loadings.length === 0
                 ? "Aucun chargement n'a encore été enregistré pour cette carrière. Utilisez le bouton ci-dessus pour saisir le tout premier chargement."
-                : "Aucun chargement ne correspond aux filtres de recherche sélectionnés."}
+                : "Aucun chargement ne correspond aux critères de recherche et filtres sélectionnés."}
             </div>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="btn btn-secondary"
+                style={{ marginTop: '0.75rem' }}
+              >
+                <RotateCcw size={14} />
+                <span>Effacer les filtres</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="table-responsive">
@@ -422,54 +944,89 @@ export const AgreeDashboard: React.FC<AgreeDashboardProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {filteredLoadings.map((l) => (
-                  <tr key={l.id}>
-                    <td>{formatDateFr(l.loading_date)}</td>
-                    <td style={{ fontWeight: 800, color: 'var(--primary-700)' }}>
-                      #{l.voucher_number}
-                    </td>
-                    <td>{l.commercial_name || '-'}</td>
-                    <td>{l.product}</td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{l.truck_plate}</td>
-                    <td style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--slate-700)' }}>
-                      {l.payment_ref || l.client_name || '-'}
-                    </td>
-                    <td>{formatTonnage(l.tonnage)}</td>
-                    <td>{formatFCFA(l.price_per_ton)}</td>
-                    <td style={{ fontWeight: 700 }}>{formatFCFA(l.total_amount)}</td>
-                    <td style={{ color: 'var(--paid-text)', fontWeight: 600 }}>
-                      {formatFCFA(l.amount_paid)}
-                    </td>
-                    <td style={{ color: l.remaining_due > 0 ? 'var(--unpaid-text)' : 'var(--slate-500)', fontWeight: 700 }}>
-                      {formatFCFA(l.remaining_due)}
-                    </td>
-                    <td>
-                      <span className={`payment-badge ${l.payment_status}`}>
-                        {l.payment_status === 'paye'
-                          ? 'Payé'
-                          : l.payment_status === 'partiellement_paye'
-                          ? 'Partiel'
-                          : 'Non payé'}
-                      </span>
-                    </td>
-                    <td>
-                      <button
-                        onClick={() => onOpenPaymentModal(l)}
-                        className="btn btn-secondary"
-                        style={{ padding: '0.3rem 0.55rem', minHeight: '30px', fontSize: '0.74rem' }}
-                        title="Modifier le montant payé"
+                {filteredLoadings.map((l) => {
+                  const status = derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid));
+                  const remaining = calculateRemainingDue(Number(l.total_amount), Number(l.amount_paid));
+
+                  return (
+                    <tr key={l.id}>
+                      <td>{formatDateFr(l.loading_date)}</td>
+                      <td style={{ fontWeight: 800, color: 'var(--primary-700)' }}>
+                        #{l.voucher_number}
+                      </td>
+                      <td>
+                        <span
+                          style={{
+                            fontWeight: 600,
+                            cursor: l.commercial_id ? 'pointer' : 'default',
+                            color: l.commercial_id === selectedCommFilter ? 'var(--primary-700)' : 'inherit',
+                            textDecoration: l.commercial_id ? 'underline dotted' : 'none',
+                          }}
+                          onClick={() => l.commercial_id && handleFilterByCommercial(l.commercial_id)}
+                          title="Cliquer pour filtrer uniquement sur ce commercial"
+                        >
+                          {l.commercial_name || '-'}
+                        </span>
+                      </td>
+                      <td style={{ fontWeight: 600 }}>{l.product}</td>
+                      <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{l.truck_plate}</td>
+                      <td style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--slate-700)' }}>
+                        {l.payment_ref || l.client_name || '-'}
+                      </td>
+                      <td>{formatTonnage(l.tonnage)}</td>
+                      <td>{formatFCFA(l.price_per_ton)}</td>
+                      <td style={{ fontWeight: 700 }}>{formatFCFA(l.total_amount)}</td>
+                      <td style={{ color: 'var(--paid-text)', fontWeight: 600 }}>
+                        {formatFCFA(l.amount_paid)}
+                      </td>
+                      <td
+                        style={{
+                          color: remaining > 0 ? 'var(--unpaid-text)' : 'var(--slate-500)',
+                          fontWeight: 700,
+                        }}
                       >
-                        <DollarSign size={13} />
-                        <span>Paiement</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        {formatFCFA(remaining)}
+                      </td>
+                      <td>
+                        <span className={`payment-badge ${status}`}>
+                          {status === 'paye'
+                            ? 'Payé'
+                            : status === 'partiellement_paye'
+                            ? 'Partiel'
+                            : 'Non payé'}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => onOpenPaymentModal(l)}
+                          className="btn btn-secondary"
+                          style={{ padding: '0.3rem 0.55rem', minHeight: '30px', fontSize: '0.74rem' }}
+                          title="Modifier le montant payé"
+                        >
+                          <DollarSign size={13} />
+                          <span>Paiement</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* MODAL DE CONSULTATION DÉTAILLÉE D'UN COMMERCIAL */}
+      {selectedCommercialForDetail && (
+        <CommercialDetailModal
+          commercial={selectedCommercialForDetail}
+          business={business}
+          carriere={carriere}
+          currentUserMember={member}
+          onClose={() => setSelectedCommercialForDetail(null)}
+          onUpdated={refreshAll}
+        />
+      )}
     </div>
   );
 };

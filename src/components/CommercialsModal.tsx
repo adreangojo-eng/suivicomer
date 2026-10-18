@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Commercial, Business, Carriere } from '../types';
 import { dataService } from '../services/dataService';
-import { Users, X, Plus, Key, Phone, Power, AlertCircle, Copy, Check, Star } from 'lucide-react';
+import { Users, X, Plus, Key, Phone, Power, AlertCircle, Copy, Check, Star, Eye } from 'lucide-react';
+import { CommercialDetailModal } from './CommercialDetailModal';
 
 interface CommercialsModalProps {
   business: Business;
@@ -17,6 +18,7 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
   onUpdated,
 }) => {
   const [commercials, setCommercials] = useState<Commercial[]>([]);
+  const [selectedCommercialForDetail, setSelectedCommercialForDetail] = useState<Commercial | null>(null);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [accessCode, setAccessCode] = useState('');
@@ -283,7 +285,25 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCommercialForDetail(c)}
+                      className="btn btn-primary"
+                      style={{
+                        padding: '0.35rem 0.65rem',
+                        minHeight: '34px',
+                        fontSize: '0.74rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.3rem',
+                      }}
+                      title="Consulter le tableau de bord et les chargements de ce commercial"
+                    >
+                      <Eye size={14} />
+                      <span>Consulter</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => handleToggleSecretary(c.id, !c.is_secretary)}
@@ -334,6 +354,19 @@ export const CommercialsModal: React.FC<CommercialsModalProps> = ({
           )}
         </div>
       </div>
+
+      {selectedCommercialForDetail && (
+        <CommercialDetailModal
+          commercial={selectedCommercialForDetail}
+          business={business}
+          carriere={carriere}
+          onClose={() => setSelectedCommercialForDetail(null)}
+          onUpdated={() => {
+            loadData();
+            onUpdated();
+          }}
+        />
+      )}
     </div>
   );
 };

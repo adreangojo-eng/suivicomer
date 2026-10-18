@@ -8,7 +8,7 @@ import {
   AVAILABLE_PRODUCTS
 } from '../types';
 import { dataService } from '../services/dataService';
-import { formatFCFA, formatTonnage, formatDateFr } from '../utils/calculations';
+import { formatFCFA, formatTonnage, formatDateFr, matchesProduct, derivePaymentStatus } from '../utils/calculations';
 import {
   Truck,
   Plus,
@@ -65,16 +65,29 @@ export const SecretaryDashboard: React.FC<SecretaryDashboardProps> = ({
 
   const filteredLoadings = loadings.filter((l) => {
     if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const matchVoucher = l.voucher_number.toString().includes(q);
-      const matchPlate = l.truck_plate.toLowerCase().includes(q);
+      const q = searchQuery.toLowerCase().trim();
+      const matchVoucher = l.voucher_number?.toString().includes(q);
+      const matchPlate = (l.truck_plate || '').toLowerCase().includes(q);
       const matchClient = (l.client_name || '').toLowerCase().includes(q);
       const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
-      if (!matchVoucher && !matchPlate && !matchClient && !matchRef) return false;
+      const matchComm = (l.commercial_name || '').toLowerCase().includes(q);
+      const matchProd = (l.product || '').toLowerCase().includes(q);
+      if (!matchVoucher && !matchPlate && !matchClient && !matchRef && !matchComm && !matchProd) return false;
     }
-    if (selectedCommFilter && l.commercial_id !== selectedCommFilter) return false;
-    if (selectedProdFilter && l.product !== selectedProdFilter) return false;
-    if (selectedStatusFilter && l.payment_status !== selectedStatusFilter) return false;
+    if (selectedCommFilter) {
+      const selectedComm = commercials.find((c) => c.id === selectedCommFilter);
+      const matchId = l.commercial_id === selectedCommFilter;
+      const matchName =
+        selectedComm &&
+        l.commercial_name &&
+        l.commercial_name.toLowerCase().trim() === selectedComm.full_name.toLowerCase().trim();
+      if (!matchId && !matchName) return false;
+    }
+    if (selectedProdFilter && !matchesProduct(l.product, selectedProdFilter)) return false;
+    if (selectedStatusFilter) {
+      const status = derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid));
+      if (status !== selectedStatusFilter) return false;
+    }
     return true;
   });
 

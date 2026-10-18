@@ -135,7 +135,7 @@ export class DataService {
       try {
         let query = supabase.from('commercials').select('*').eq('business_id', businessId);
         if (carriereId) {
-          query = query.eq('carriere_id', carriereId);
+          query = query.or(`carriere_id.eq.${carriereId},carriere_id.is.null`);
         }
         const { data, error } = await query.order('full_name');
 

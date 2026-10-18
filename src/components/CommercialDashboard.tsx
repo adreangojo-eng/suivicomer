@@ -8,7 +8,7 @@ import {
   AVAILABLE_PRODUCTS
 } from '../types';
 import { dataService } from '../services/dataService';
-import { formatFCFA, formatTonnage, formatDateFr } from '../utils/calculations';
+import { formatFCFA, formatTonnage, formatDateFr, matchesProduct, derivePaymentStatus } from '../utils/calculations';
 import {
   Layers,
   Truck,
@@ -105,22 +105,32 @@ export const CommercialDashboard: React.FC<CommercialDashboardProps> = ({
   const totalPaid = loadings.reduce((sum, l) => sum + Number(l.amount_paid), 0);
   const totalRemaining = Math.max(0, totalInvoiced - totalPaid);
 
-  const unpaidCount = loadings.filter((l) => l.payment_status === 'non_paye').length;
-  const partialCount = loadings.filter((l) => l.payment_status === 'partiellement_paye').length;
-  const paidCount = loadings.filter((l) => l.payment_status === 'paye').length;
+  const unpaidCount = loadings.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'non_paye'
+  ).length;
+  const partialCount = loadings.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'partiellement_paye'
+  ).length;
+  const paidCount = loadings.filter(
+    (l) => derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid)) === 'paye'
+  ).length;
 
   // Filtrage
   const filteredLoadings = loadings.filter((l) => {
     if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const matchVoucher = l.voucher_number.toString().includes(q);
-      const matchPlate = l.truck_plate.toLowerCase().includes(q);
+      const q = searchQuery.toLowerCase().trim();
+      const matchVoucher = l.voucher_number?.toString().includes(q);
+      const matchPlate = (l.truck_plate || '').toLowerCase().includes(q);
       const matchClient = (l.client_name || '').toLowerCase().includes(q);
       const matchRef = (l.payment_ref || '').toLowerCase().includes(q);
-      if (!matchVoucher && !matchPlate && !matchClient && !matchRef) return false;
+      const matchProd = (l.product || '').toLowerCase().includes(q);
+      if (!matchVoucher && !matchPlate && !matchClient && !matchRef && !matchProd) return false;
     }
-    if (selectedProdFilter && l.product !== selectedProdFilter) return false;
-    if (selectedStatusFilter && l.payment_status !== selectedStatusFilter) return false;
+    if (selectedProdFilter && !matchesProduct(l.product, selectedProdFilter)) return false;
+    if (selectedStatusFilter) {
+      const status = derivePaymentStatus(Number(l.total_amount), Number(l.amount_paid));
+      if (status !== selectedStatusFilter) return false;
+    }
     return true;
   });
 
