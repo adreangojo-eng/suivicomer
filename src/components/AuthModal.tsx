@@ -101,6 +101,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthenticated }) => {
             onAuthenticated(session.user, session.business, session.member);
             return;
           }
+        } else if (agreeRes.error) {
+          // Si l'erreur est un problème de confirmation d'email ou réseau, on l'affiche directement
+          if (
+            agreeRes.error.includes("n'est pas encore confirmée") ||
+            agreeRes.error.includes("Failed to fetch") ||
+            agreeRes.error.includes("Impossible de contacter") ||
+            agreeRes.error.includes("Limite")
+          ) {
+            setErrorMsg(agreeRes.error);
+            setLoading(false);
+            return;
+          }
         }
       }
 

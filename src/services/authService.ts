@@ -248,13 +248,26 @@ export class AuthService {
       });
 
       if (error) {
-        if (/already registered|already exists/i.test(error.message)) {
+        const msg = error.message || '';
+        if (/already registered|already exists/i.test(msg)) {
           return {
             success: false,
             error: 'Cette adresse email est déjà utilisée. Connectez-vous dans l\'onglet « Agréé / Secrétaire ».',
           };
         }
-        return { success: false, error: error.message };
+        if (/rate limit|over_email_send_rate_limit/i.test(msg)) {
+          return {
+            success: false,
+            error: "Limite d'envoi d'emails Supabase atteinte. Pour la débloquer immédiatement : dans votre console Supabase, allez dans Authentication > Providers > Email et décochez 'Confirm email', puis réessayez. Sinon, patientez quelques minutes.",
+          };
+        }
+        if (/Failed to fetch|NetworkError/i.test(msg)) {
+          return {
+            success: false,
+            error: "Impossible de joindre le serveur Supabase (Failed to fetch). Vérifiez votre connexion internet ou l'état de votre projet Supabase.",
+          };
+        }
+        return { success: false, error: msg };
       }
 
       // Supabase masque les emails déjà inscrits : identities vide = compte existant
@@ -277,7 +290,14 @@ export class AuthService {
       await this.ensureAgreeAccount(data.user);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err?.message || "Impossible de finaliser l'inscription" };
+      const msg = err?.message || '';
+      if (/Failed to fetch|NetworkError/i.test(msg)) {
+        return {
+          success: false,
+          error: "Impossible de joindre le serveur Supabase (Failed to fetch). Vérifiez votre connexion internet ou l'état de votre projet Supabase.",
+        };
+      }
+      return { success: false, error: msg || "Impossible de finaliser l'inscription" };
     }
   }
 
@@ -303,13 +323,22 @@ export class AuthService {
             "Identifiants incorrects ou compte inexistant. Si c'est votre première utilisation, veuillez d'abord créer votre compte dans l'onglet 'Créer un Agréé'.";
         } else if (msg.includes('Email not confirmed')) {
           msg =
-            "Votre adresse email n'est pas encore confirmée. Cliquez sur le lien reçu par email puis reconnectez-vous.";
+            "Votre adresse email n'est pas encore confirmée. Vérifiez vos spams ou désactivez la confirmation d'email dans votre console Supabase (Auth > Providers > Email).";
+        } else if (/Failed to fetch|NetworkError/i.test(msg)) {
+          msg = "Impossible de contacter le serveur Supabase (Failed to fetch). Vérifiez votre connexion internet.";
         }
         return { success: false, error: msg };
       }
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err?.message || 'Échec de connexion' };
+      const msg = err?.message || '';
+      if (/Failed to fetch|NetworkError/i.test(msg)) {
+        return {
+          success: false,
+          error: "Impossible de contacter le serveur Supabase (Failed to fetch). Vérifiez votre connexion internet.",
+        };
+      }
+      return { success: false, error: msg || 'Échec de connexion' };
     }
   }
 
